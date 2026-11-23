@@ -13,7 +13,7 @@
     "trailingSLPoints": 10,
     "autoExitEnabled": true,
     "targetDailyNetProfitPct": 15,
-    "maxDailyLossNetPct": 10,
+    "maxDailyLossNetPct": 10.2,
     "nearThresholdBufferPct": 98
   }
 }
