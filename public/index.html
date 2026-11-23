@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Multi-Broker Algo Auto-Exit Terminal | Angel One • Dhan • Kotak Neo</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- TOP NAVIGATION BAR -->
+    <header class="top-nav">
+      <div class="nav-left">
+        <div class="brand">
+          <div class="brand-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+            </svg>
+          </div>
+          <div class="brand-text">
+            <span class="brand-title">MULTI-BROKER ALGO AUTO-EXIT</span>
+            <span class="brand-sub">ANGEL ONE • DHAN • KOTAK NEO</span>
+          </div>
+        </div>
+
+        <!-- Mode Badge -->
+        <div class="mode-badge" id="modeBadge">
+          <span class="pulse-dot"></span>
+          <span id="modeText">SIMULATION (MOCK)</span>
+          <button class="btn-text" id="toggleModeBtn" title="Switch between Live and Mock mode">Switch</button>
+        </div>
+
+        <!-- Data Feed Subscription Badge -->
+        <div class="datafeed-pill" title="Active Market Data Stream Source">
+          <span class="pill-label">Feed:</span>
+          <span class="pill-val" id="activeFeedText">Kotak Neo</span>
+          <button class="btn-text" id="switchFeedBtn">Change</button>
+        </div>
+
+        <!-- IST Clock & Market Status -->
+        <div class="clock-display" id="clockDisplay">
+          <span class="clock-time" id="istClock">--:--:-- IST</span>
+          <span class="market-pill" id="marketPill">Checking...</span>
+        </div>
+      </div>
+
+      <div class="nav-right">
+        <!-- Multi-Broker Accounts Pill -->
+        <button class="btn-broker-accounts" id="openAccountsBtn" title="Manage Angel One, Dhan, Kotak Neo Accounts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+          <span id="accountsBtnText">Brokers (3 Active)</span>
+        </button>
+
+        <!-- Connection status -->
+        <div class="conn-status" id="connStatus">
+          <span class="status-indicator online"></span>
+          <span class="status-label" id="connLabel">Connected</span>
+        </div>
+
+        <!-- Panic / Emergency Buttons -->
+        <div class="panic-actions">
+          <button class="btn-danger" id="exitAllBtn" title="Emergency Square-Off All Open Positions Across All Brokers">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="15" y1="9" x2="9" y2="15"></line>
+              <line x1="9" y1="9" x2="15" y2="15"></line>
+            </svg>
+            <span>Exit All</span>
+          </button>
+          <button class="btn-warning" id="cancelAllOrdersBtn" title="Cancel All Open/Pending Orders">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"></polygon>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+            <span>Cancel Orders</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 9:00 AM OPENING BALANCE & NET PROFIT % CONTROLS BAR -->
+    <section class="opening-balance-banner">
+      <div class="banner-left">
+        <div class="balance-item">
+          <span class="balance-label">9:00 AM OPENING BALANCE</span>
+          <div class="balance-val-row">
+            <span class="balance-num mono" id="openingBalanceDisplay">₹5,00,000.00</span>
+            <button class="btn-xs btn-outline" id="syncBalanceBtn" title="Fetch morning balance across all active brokers">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M23 4v6h-6"></path>
+                <path d="M1 20v-6h6"></path>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+              <span>Sync Balance</span>
+            </button>
+            <button class="btn-xs btn-outline" id="overrideBalanceBtn" title="Manually edit opening capital">Edit</button>
+          </div>
+          <span class="balance-sub" id="openingBalanceTime">Auto-captured at 9:00 AM IST</span>
+        </div>
+      </div>
+
+      <!-- Quick Net Profit % Auto-Exit Rule Bar on Page -->
+      <div class="banner-right">
+        <div class="auto-exit-quick-controls">
+          <div class="quick-ctrl-group">
+            <label for="quickTargetPct">Target Net Profit (%):</label>
+            <div class="input-with-addon">
+              <input type="number" id="quickTargetPct" step="0.1" value="1.5" min="0.1" max="100">
+              <span class="addon">%</span>
+            </div>
+            <span class="hint-calc" id="quickTargetInrHint">= ₹7,500 Net</span>
+          </div>
+
+          <div class="quick-ctrl-group">
+            <label for="quickNearBuffer">Exit When Near/Above:</label>
+            <div class="input-with-addon">
+              <input type="number" id="quickNearBuffer" step="1" value="98" min="50" max="100">
+              <span class="addon">%</span>
+            </div>
+            <span class="hint-calc" id="quickNearInrHint">&ge; 98% of target</span>
+          </div>
+
+          <div class="quick-ctrl-group">
+            <label for="quickStopLossPct">Net Stop Loss (%):</label>
+            <div class="input-with-addon">
+              <input type="number" id="quickStopLossPct" step="0.1" value="1.0" min="0.1" max="50">
+              <span class="addon">%</span>
+            </div>
+            <span class="hint-calc" id="quickStopInrHint">= -₹5,000 Net</span>
+          </div>
+
+          <div class="quick-ctrl-actions">
+            <button class="btn-primary btn-sm" id="applyGlobalRuleBtn" title="Set this Net Profit % rule for all open positions">
+              Apply to Net Positions
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- METRICS SUMMARY BAR -->
+    <section class="metrics-grid">
+      <div class="metric-card hero-metric" id="heroMetricCard">
+        <span class="metric-title">TOTAL NET P&L (AFTER ALL CHARGES)</span>
+        <div class="metric-value-row">
+          <span class="metric-val mono" id="totalNetPnl">₹0.00</span>
+          <span class="metric-badge" id="netProfitPctBadge">+0.00% of Capital</span>
+        </div>
+        <div class="metric-sub-row">
+          <span>Gross P&L: <strong id="totalGrossPnl" class="mono">₹0.00</strong></span>
+          <span>Est. Brokerage & Taxes: <strong id="totalCharges" class="mono loss-text">₹0.00</strong></span>
+        </div>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-title">NET CAPITAL RETURN %</span>
+        <div class="metric-value-row">
+          <span class="metric-val mono" id="capitalReturnPct">0.00%</span>
+          <span class="metric-sub-label">on 9:00 AM Balance</span>
+        </div>
+        <div class="metric-sub-row">
+          <span>Target: <strong id="targetDisplay">1.50%</strong></span>
+          <span>Max Loss: <strong id="maxLossDisplay">-1.00%</strong></span>
+        </div>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-title">TOTAL AVAILABLE FUNDS</span>
+        <div class="metric-value-row">
+          <span class="metric-val mono" id="availableFunds">₹0.00</span>
+        </div>
+        <div class="metric-sub-row">
+          <span>Utilized Margin: <strong id="utilizedMargin" class="mono">₹0.00</strong></span>
+        </div>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-title">AUTO-EXIT ENGINE STATUS</span>
+        <div class="metric-value-row">
+          <span class="metric-val" id="engineStatusText">ACTIVE</span>
+          <label class="toggle-switch" title="Toggle Auto-Exit Monitoring">
+            <input type="checkbox" id="autoExitToggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="metric-sub-row">
+          <span>Positions Monitored: <strong id="monitoredPositionsCount">0</strong></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB NAVIGATION -->
+    <nav class="tab-bar">
+      <button class="tab-btn active" data-tab="tabPositions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+        </svg>
+        <span>Positions (All Brokers)</span>
+        <span class="badge" id="positionsTabBadge">0</span>
+      </button>
+
+      <button class="tab-btn" data-tab="tabPlaceOrder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 5v14M5 12h14"></path>
+        </svg>
+        <span>Place Order</span>
+      </button>
+
+      <button class="tab-btn" data-tab="tabOrderBook">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+          <line x1="16" y1="13" x2="8" y2="13"></line>
+          <line x1="16" y1="17" x2="8" y2="17"></line>
+        </svg>
+        <span>Order Book</span>
+        <span class="badge" id="ordersTabBadge">0</span>
+      </button>
+
+      <button class="tab-btn" data-tab="tabBrokers">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+          <circle cx="9" cy="7" r="4"></circle>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+        </svg>
+        <span>Broker Accounts</span>
+      </button>
+
+      <button class="tab-btn" data-tab="tabAutoExit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"></path>
+        </svg>
+        <span>Audit Logs & Triggers</span>
+      </button>
+    </nav>
+
+    <!-- TAB CONTENTS -->
+    <main class="main-content">
+      <!-- 1. POSITIONS TAB -->
+      <section class="tab-panel active" id="tabPositions">
+        <div class="panel-header">
+          <div class="panel-header-title">
+            <h2>Live Multi-Broker Positions & Net Profit %</h2>
+            <p>Positions automatically appear here when an order executes on Angel One, Dhan, or Kotak Neo. Charges & Net Profit are recalculated continuously.</p>
+          </div>
+          <div class="panel-header-actions">
+            <button class="btn-sm btn-outline" id="refreshPositionsBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M23 4v6h-6"></path>
+                <path d="M1 20v-6h6"></path>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+              <span>Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table" id="positionsTable">
+            <thead>
+              <tr>
+                <th>Broker</th>
+                <th>Symbol</th>
+                <th>Product</th>
+                <th class="text-right">Net Qty</th>
+                <th class="text-right">Avg Price</th>
+                <th class="text-right">LTP</th>
+                <th class="text-right">Gross P&L</th>
+                <th class="text-right">Charges</th>
+                <th class="text-right">Net P&L (₹)</th>
+                <th class="text-right">Net Return %</th>
+                <th>Auto-Exit Condition</th>
+                <th class="text-center">Action</th>
+              </tr>
+            </thead>
+            <tbody id="positionsTableBody">
+              <tr>
+                <td colspan="12" class="empty-state">Loading positions across brokers...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 2. PLACE ORDER TAB -->
+      <section class="tab-panel" id="tabPlaceOrder">
+        <div class="order-form-container">
+          <div class="order-form-card">
+            <div class="form-header">
+              <h2>Execute Order to Selected Broker</h2>
+              <p>Routes order to Angel One, Dhan, or Kotak Neo. Position will automatically show in the positions tab upon execution.</p>
+            </div>
+
+            <form id="orderForm">
+              <!-- Select Broker Account -->
+              <div class="form-group" style="margin-bottom: 16px;">
+                <label for="orderBrokerSelect">Select Execution Broker Account</label>
+                <select id="orderBrokerSelect" required>
+                  <option value="">Loading accounts...</option>
+                </select>
+              </div>
+
+              <!-- Buy / Sell Toggle -->
+              <div class="segmented-control transaction-toggle">
+                <input type="radio" name="transactionType" id="buyRadio" value="B" checked>
+                <label for="buyRadio" class="btn-buy-toggle">BUY</label>
+                <input type="radio" name="transactionType" id="sellRadio" value="S">
+                <label for="sellRadio" class="btn-sell-toggle">SELL</label>
+              </div>
+
+              <!-- Symbol & Segment -->
+              <div class="form-row two-col">
+                <div class="form-group">
+                  <label for="orderSymbol">Trading Symbol</label>
+                  <input type="text" id="orderSymbol" placeholder="e.g. NIFTY 24NOV 24200 CE, RELIANCE-EQ" required>
+                  <div class="quick-chips">
+                    <span class="chip" data-symbol="NIFTY 24NOV 24200 CE" data-segment="nse_fo">NIFTY 24200 CE</span>
+                    <span class="chip" data-symbol="BANKNIFTY 24NOV 52200 PE" data-segment="nse_fo">BANKNIFTY 52200 PE</span>
+                    <span class="chip" data-symbol="RELIANCE-EQ" data-segment="nse_cm">RELIANCE</span>
+                    <span class="chip" data-symbol="HDFCBANK-EQ" data-segment="nse_cm">HDFCBANK</span>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="orderSegment">Exchange Segment</label>
+                  <select id="orderSegment">
+                    <option value="nse_fo" selected>NSE Derivatives F&O (nse_fo)</option>
+                    <option value="nse_cm">NSE Equity (nse_cm)</option>
+                    <option value="bse_fo">BSE Derivatives (bse_fo)</option>
+                    <option value="bse_cm">BSE Equity (bse_cm)</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Product & Order Type -->
+              <div class="form-row two-col">
+                <div class="form-group">
+                  <label for="orderProduct">Product</label>
+                  <select id="orderProduct">
+                    <option value="MIS" selected>MIS (Intraday)</option>
+                    <option value="CNC">CNC (Delivery)</option>
+                    <option value="NRML">NRML (Normal Margin)</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="orderType">Order Type</label>
+                  <select id="orderType">
+                    <option value="MKT" selected>MARKET (MKT)</option>
+                    <option value="L">LIMIT (L)</option>
+                    <option value="SL">STOP LOSS (SL)</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Quantity & Price -->
+              <div class="form-row two-col">
+                <div class="form-group">
+                  <label for="orderQuantity">Quantity</label>
+                  <input type="number" id="orderQuantity" min="1" value="50" required>
+                  <div class="quick-chips">
+                    <span class="chip-qty" data-qty="25">+25</span>
+                    <span class="chip-qty" data-qty="50">+50</span>
+                    <span class="chip-qty" data-qty="100">+100</span>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="orderPrice">Price (₹)</label>
+                  <input type="number" id="orderPrice" step="0.05" value="0.00" disabled>
+                  <span class="input-hint">0 for Market</span>
+                </div>
+              </div>
+
+              <!-- Submit button -->
+              <div class="form-actions">
+                <button type="submit" class="btn-primary-large btn-buy" id="submitOrderBtn">
+                  <span>PLACE BUY ORDER</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. ORDER BOOK TAB -->
+      <section class="tab-panel" id="tabOrderBook">
+        <div class="panel-header">
+          <div class="panel-header-title">
+            <h2>Multi-Broker Order History</h2>
+            <p>All executed, pending, and cancelled orders from Angel One, Dhan, and Kotak Neo.</p>
+          </div>
+          <div class="panel-header-actions">
+            <button class="btn-sm btn-outline" id="refreshOrdersBtn">Refresh</button>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table" id="ordersTable">
+            <thead>
+              <tr>
+                <th>Broker</th>
+                <th>Order ID</th>
+                <th>Time</th>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th>Type</th>
+                <th class="text-right">Qty</th>
+                <th class="text-right">Price</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="ordersTableBody">
+              <tr>
+                <td colspan="9" class="empty-state">Loading order book...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 4. BROKER ACCOUNTS TAB -->
+      <section class="tab-panel" id="tabBrokers">
+        <div class="panel-header">
+          <div class="panel-header-title">
+            <h2>Connected Broker Accounts</h2>
+            <p>Configure multiple broker accounts (Kotak Neo, Angel One SmartAPI, DhanHQ). When any order executes on any broker, the position immediately appears on the page.</p>
+          </div>
+          <div class="panel-header-actions">
+            <button class="btn-primary btn-sm" id="addNewAccountBtn">+ Add Broker Account</button>
+          </div>
+        </div>
+
+        <div class="table-container" style="margin-bottom: 24px;">
+          <table class="data-table" id="accountsTable">
+            <thead>
+              <tr>
+                <th>Broker</th>
+                <th>Account Name</th>
+                <th>Client Code / UCC</th>
+                <th>Status</th>
+                <th>Available Balance</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="accountsTableBody">
+              <tr>
+                <td colspan="6" class="empty-state">Loading accounts...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Data Feed Source Selection -->
+        <div class="sub-card">
+          <div class="sub-card-header">
+            <h3>Market Data Feed Subscription</h3>
+            <span class="badge" id="currentFeedBadge">Current: Kotak Neo</span>
+          </div>
+          <p class="section-desc">Select which broker account provides real-time streaming market quotes & tick data:</p>
+          <div style="display: flex; gap: 16px; margin-top: 10px;">
+            <label class="custom-radio">
+              <input type="radio" name="feedChoice" value="kotakneo" id="feedKotakRadio" checked>
+              <span>Kotak Neo API Feed</span>
+            </label>
+            <label class="custom-radio">
+              <input type="radio" name="feedChoice" value="angelone" id="feedAngelRadio">
+              <span>Angel One SmartAPI Feed</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. AUDIT LOGS & TRIGGERS TAB -->
+      <section class="tab-panel" id="tabAutoExit">
+        <div class="sub-card">
+          <div class="sub-card-header">
+            <h3>Live Algo Auto-Exit Audit Trail</h3>
+            <button class="btn-xs btn-outline" id="clearLogsBtn">Clear</button>
+          </div>
+          <div class="logs-container" id="logsContainer">
+            <div class="log-entry log-info">
+              <span class="log-time">[System]</span>
+              <span class="log-msg">Multi-Broker Algo Auto-Exit Engine active.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- MODAL: ADD / EDIT BROKER ACCOUNT -->
+  <div class="modal-backdrop" id="accountModal">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <h3 id="accountModalTitle">Add Broker Account</h3>
+        <button class="btn-close" id="closeAccountModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="accountForm">
+          <input type="hidden" id="editAccountId">
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <label for="accBroker">Select Broker Platform</label>
+              <select id="accBroker" required>
+                <option value="kotakneo">Kotak Neo (Kotak Securities)</option>
+                <option value="angelone">Angel One (SmartAPI)</option>
+                <option value="dhan">Dhan (DhanHQ)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="accName">Account Label / Name</label>
+              <input type="text" id="accName" placeholder="e.g. Angel One Algo 1" required>
+            </div>
+          </div>
+
+          <!-- Dynamic Credentials Section -->
+          <div id="kotakFields" class="broker-fields">
+            <h4>Kotak Neo Credentials</h4>
+            <div class="form-row two-col">
+              <div class="form-group">
+                <label>Consumer Key</label>
+                <input type="text" id="kotakConsumerKey" placeholder="Application Consumer Key">
+              </div>
+              <div class="form-group">
+                <label>Mobile Number</label>
+                <input type="text" id="kotakMobile" placeholder="+919876543210">
+              </div>
+            </div>
+            <div class="form-row three-col">
+              <div class="form-group">
+                <label>UCC</label>
+                <input type="text" id="kotakUcc" placeholder="UCC">
+              </div>
+              <div class="form-group">
+                <label>MPIN</label>
+                <input type="password" id="kotakMpin" maxlength="6" placeholder="******">
+              </div>
+              <div class="form-group">
+                <label>TOTP Secret (Base32)</label>
+                <input type="text" id="kotakTotpSecret" placeholder="Optional for auto-TOTP">
+              </div>
+            </div>
+          </div>
+
+          <div id="angelFields" class="broker-fields" style="display: none;">
+            <h4>Angel One SmartAPI Credentials</h4>
+            <div class="form-row two-col">
+              <div class="form-group">
+                <label>API Key (X-PrivateKey)</label>
+                <input type="text" id="angelApiKey" placeholder="SmartAPI Application API Key">
+              </div>
+              <div class="form-group">
+                <label>Client Code (User ID)</label>
+                <input type="text" id="angelClientCode" placeholder="Angel Client Code (e.g. S123456)">
+              </div>
+            </div>
+            <div class="form-row two-col">
+              <div class="form-group">
+                <label>Password / PIN</label>
+                <input type="password" id="angelPassword" placeholder="Trading PIN / Password">
+              </div>
+              <div class="form-group">
+                <label>TOTP Secret (Base32)</label>
+                <input type="text" id="angelTotpSecret" placeholder="Authenticator Secret for TOTP">
+              </div>
+            </div>
+          </div>
+
+          <div id="dhanFields" class="broker-fields" style="display: none;">
+            <h4>DhanHQ API Credentials</h4>
+            <div class="form-row two-col">
+              <div class="form-group">
+                <label>Dhan Client ID</label>
+                <input type="text" id="dhanClientId" placeholder="1000000000">
+              </div>
+              <div class="form-group">
+                <label>JWT Access Token</label>
+                <input type="text" id="dhanAccessToken" placeholder="DhanHQ Access Token from web.dhan.co">
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn-secondary" id="testAccConnBtn">Test Connection</button>
+            <button type="submit" class="btn-primary">Save Account</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: POSITION AUTO-EXIT NET PROFIT % -->
+  <div class="modal-backdrop" id="autoExitModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modalPosTitle">Set Net Profit % Auto-Exit Rule</h3>
+        <button class="btn-close" id="closeAutoExitModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-pos-summary" id="modalPosSummary"></div>
+
+        <form id="autoExitRuleForm">
+          <input type="hidden" id="rulePosSymbol">
+          <input type="hidden" id="rulePosProduct">
+          <input type="hidden" id="rulePosAccountId">
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <label for="ruleTargetNetPct">Target Net Profit (%)</label>
+              <input type="number" id="ruleTargetNetPct" step="0.1" placeholder="e.g. 1.5" required>
+              <span class="input-hint">% of 9:00 AM Opening Balance</span>
+            </div>
+
+            <div class="form-group">
+              <label for="ruleNearBuffer">Near Trigger Buffer (%)</label>
+              <input type="number" id="ruleNearBuffer" step="1" value="98" min="50" max="100">
+              <span class="input-hint">e.g. 98% = trigger when near 98% of target</span>
+            </div>
+          </div>
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <label for="ruleStopLossNetPct">Net Stop Loss (%)</label>
+              <input type="number" id="ruleStopLossNetPct" step="0.1" placeholder="e.g. 1.0">
+              <span class="input-hint">Exit if Net Loss &ge; this %</span>
+            </div>
+
+            <div class="form-group">
+              <label for="ruleTrailingSL">Trailing Stop (Points)</label>
+              <input type="number" id="ruleTrailingSL" step="1" placeholder="Optional">
+              <span class="input-hint">LTP points trailing</span>
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn-secondary" id="deleteRuleBtn" style="display: none;">Remove Rule</button>
+            <button type="submit" class="btn-primary">Save Rule</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CHARGES BREAKDOWN INSPECTOR -->
+  <div class="modal-backdrop" id="chargesModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Estimated Charges Breakdown</h3>
+        <button class="btn-close" id="closeChargesModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="chargesModalContent"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST CONTAINER -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

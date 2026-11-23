@@ -1,0 +1,16 @@
+{
+  "mode": "mock",
+  "consumerKey": "",
+  "mobileNumber": "",
+  "ucc": "",
+  "mpin": "",
+  "totpSecret": "",
+  "baseUrl": "https://napi.kotaksecurities.com",
+  "riskSettings": {
+    "targetDailyNetProfitPct": 1.5,
+    "maxDailyLossNetPct": 1.0,
+    "autoSquareOffTime": "15:15",
+    "nearThresholdBufferPct": 98,
+    "autoExitEnabled": true
+  }
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "id": "acc_kotak_default",
+    "broker": "kotakneo",
+    "name": "Kotak Neo Main",
+    "enabled": true,
+    "consumerKey": "",
+    "mobileNumber": "",
+    "ucc": "",
+    "mpin": "",
+    "totpSecret": "",
+    "baseUrl": "https://napi.kotaksecurities.com"
+  },
+  {
+    "id": "acc_angel_default",
+    "broker": "angelone",
+    "name": "Angel One SmartAPI",
+    "enabled": false,
+    "apiKey": "",
+    "clientCode": "",
+    "password": "",
+    "totpSecret": ""
+  },
+  {
+    "id": "acc_dhan_default",
+    "broker": "dhan",
+    "name": "DhanHQ Trading",
+    "enabled": false,
+    "clientId": "",
+    "accessToken": ""
+  }
+]

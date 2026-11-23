@@ -1,0 +1,33 @@
+{
+  "date": "2026-11-23",
+  "openingBalance": 875000,
+  "capturedAt": "2026-11-23T10:34:27.749Z",
+  "isAutoCaptured": true,
+  "accounts": [
+    {
+      "id": "mock_kotak_1",
+      "broker": "kotakneo",
+      "name": "Kotak Neo (Demo)",
+      "availableCash": 250000,
+      "utilizedMargin": 45000,
+      "totalBalance": 295000
+    },
+    {
+      "id": "mock_angel_1",
+      "broker": "angelone",
+      "name": "Angel One (Demo)",
+      "availableCash": 180000,
+      "utilizedMargin": 32000,
+      "totalBalance": 212000
+    },
+    {
+      "id": "mock_dhan_1",
+      "broker": "dhan",
+      "name": "Dhan (Demo)",
+      "availableCash": 320000,
+      "utilizedMargin": 48000,
+      "totalBalance": 368000
+    }
+  ],
+  "timeFormatted": "4:04:27 PM IST"
+}

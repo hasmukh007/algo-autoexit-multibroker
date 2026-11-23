@@ -1,0 +1,19 @@
+{
+  "name": "kotak-neo-algo-autoexit",
+  "version": "1.0.0",
+  "description": "Node.js Backend with Live UI for Kotak Neo API and Algo Auto-Exit Execution",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "kotak-neo",
+    "kotak-neo-api",
+    "algo-trading",
+    "auto-exit",
+    "trading-dashboard"
+  ],
+  "author": "",
+  "license": "MIT"
+}
