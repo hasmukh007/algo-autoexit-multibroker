@@ -12,8 +12,8 @@
     "autoSquareOffTime": "15:15",
     "trailingSLPoints": 10,
     "autoExitEnabled": true,
-    "targetDailyNetProfitPct": 1.5,
-    "maxDailyLossNetPct": 1,
+    "targetDailyNetProfitPct": 15,
+    "maxDailyLossNetPct": 15,
     "nearThresholdBufferPct": 98
   }
 }
