@@ -1,12 +1,12 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const url = require('url');
 
 const MultiBrokerManager = require('./lib/multiBrokerManager');
 const OpeningBalanceScheduler = require('./lib/openingBalanceScheduler');
 const ChargesCalculator = require('./lib/chargesCalculator');
 const AutoExitEngine = require('./lib/autoExitEngine');
+const { NiftyFeedManager } = require('./lib/niftyFeedManager');
 const configManager = require('./lib/configManager');
 const totpHelper = require('./lib/totpHelper');
 
@@ -22,6 +22,10 @@ const openingBalanceScheduler = new OpeningBalanceScheduler(multiBrokerManager);
 // Instantiate Algo Auto-Exit Engine
 const autoExitEngine = new AutoExitEngine(multiBrokerManager, openingBalanceScheduler, configManager);
 autoExitEngine.start();
+
+// Instantiate 9:00 AM NIFTY Spot & 10 ITM + ATM + 10 OTM Option Chain Feed Manager
+const niftyFeedManager = new NiftyFeedManager(multiBrokerManager, configManager);
+
 
 // Active SSE client connections
 const sseClients = new Set();
@@ -41,6 +45,43 @@ autoExitEngine.on('log', logEntry => broadcastSSE('log', logEntry));
 autoExitEngine.on('rule_updated', data => broadcastSSE('rule_updated', data));
 autoExitEngine.on('position_exited', data => broadcastSSE('position_exited', data));
 openingBalanceScheduler.on('balance_updated', data => broadcastSSE('opening_balance_updated', data));
+
+niftyFeedManager.on('feed_started', info => {
+  autoExitEngine.log(
+    'INFO',
+    `NIFTY Option Feed started (${info.autoStarted9AM ? '9:00 AM IST Auto-Start' : 'Manual Start'}) — ATM ${info.atmStrike} | ${info.totalStrikes} strikes (${info.totalContracts} CE/PE contracts)`
+  );
+  broadcastSSE('nifty_tick', niftyFeedManager.getSnapshot());
+});
+
+niftyFeedManager.on('feed_stopped', () => {
+  autoExitEngine.log('INFO', 'NIFTY Option Chain feed paused.');
+  broadcastSSE('nifty_tick', niftyFeedManager.getSnapshot());
+});
+
+niftyFeedManager.on('atm_recentered', info => {
+  autoExitEngine.log('INFO', `NIFTY Option Chain recentered around ATM ${info.atmStrike}.`);
+  broadcastSSE('nifty_tick', niftyFeedManager.getSnapshot());
+});
+
+niftyFeedManager.on('feed_subscribed', info => {
+  autoExitEngine.log(
+    'INFO',
+    `Subscribed live NIFTY + ${info.totalStrikes} strike (${info.totalContracts} CE/PE) feed on ${(info.broker || '').toUpperCase()} (${info.accountName || info.accountId})`
+  );
+  broadcastSSE('feed_subscribed', info);
+  broadcastSSE('nifty_tick', niftyFeedManager.getSnapshot());
+});
+
+niftyFeedManager.on('tick', snapshot => {
+  if (sseClients.size > 0) {
+    broadcastSSE('nifty_tick', snapshot);
+  }
+});
+
+multiBrokerManager.on('order_update', evt => {
+  autoExitEngine.log('INFO', `Order/trade update received on ${String(evt.broker || '').toUpperCase()} WebSocket — refreshing net positions & holdings.`);
+});
 
 // Background tick broadcaster: pushes enriched positions, charges, Net P&L, 9:00 AM balance
 setInterval(async () => {
@@ -148,6 +189,7 @@ const MIME_TYPES = {
 function serveStatic(req, res, parsedUrl) {
   let pathname = parsedUrl.pathname;
   if (pathname === '/' || pathname === '') pathname = '/index.html';
+  if (pathname === '/option-chain') pathname = '/option-chain.html';
 
   const safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
   const filePath = path.join(__dirname, 'public', safePath);
@@ -171,7 +213,14 @@ function serveStatic(req, res, parsedUrl) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const parsedUrl = url.parse(req.url, true);
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  } catch (e) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('Bad Request');
+    return;
+  }
   const pathname = parsedUrl.pathname;
   const method = req.method;
 
@@ -194,6 +243,7 @@ const server = http.createServer(async (req, res) => {
       'Access-Control-Allow-Origin': '*'
     });
     res.write('event: connected\ndata: {"status":"connected"}\n\n');
+    res.write(`event: nifty_tick\ndata: ${JSON.stringify(niftyFeedManager.getSnapshot())}\n\n`);
     sseClients.add(res);
 
     req.on('close', () => sseClients.delete(res));
@@ -221,15 +271,81 @@ const server = http.createServer(async (req, res) => {
         }
         const created = multiBrokerManager.addAccount(body);
         autoExitEngine.log('INFO', `Added broker account: ${created.name} (${created.broker})`);
-        return sendJson(res, 200, { success: true, data: created });
+
+        const loginSub = await multiBrokerManager.authenticateAndSubscribe(created.id, body.totp);
+        let feedSnapshot = null;
+        if (loginSub.authenticated && loginSub.subscribed) {
+          feedSnapshot = await niftyFeedManager.subscribeOnBrokerLogin({
+            accountId: created.id,
+            broker: created.broker,
+            accountName: created.name
+          });
+        }
+
+        return sendJson(res, 200, {
+          success: true,
+          data: created,
+          loginResult: loginSub,
+          feedSubscribed: Boolean(loginSub.authenticated && loginSub.subscribed),
+          dataFeedSource: multiBrokerManager.getDataFeedSource(),
+          niftyFeed: feedSnapshot
+        });
+      }
+
+      if (pathname === '/api/accounts/test-credentials' && method === 'POST') {
+        const body = await parseBody(req);
+        if (!body.broker || !['kotakneo', 'angelone', 'dhan'].includes(body.broker)) {
+          return sendJson(res, 400, { success: false, message: 'Valid broker (kotakneo, angelone, dhan) is required' });
+        }
+        const KotakNeoBroker = require('./lib/brokers/kotakNeoBroker');
+        const AngelOneBroker = require('./lib/brokers/angelOneBroker');
+        const DhanBroker = require('./lib/brokers/dhanBroker');
+        const testCfg = { ...body, isMock: currentConfig.mode === 'mock' };
+        let tempInst;
+        if (body.broker === 'kotakneo') tempInst = new KotakNeoBroker(testCfg);
+        else if (body.broker === 'angelone') tempInst = new AngelOneBroker(testCfg);
+        else tempInst = new DhanBroker(testCfg);
+
+        try {
+          const resLogin = await tempInst.login(body.totp || null);
+          return sendJson(res, 200, {
+            success: Boolean(resLogin && resLogin.success),
+            message: (resLogin && typeof resLogin.message === 'string' ? resLogin.message : 'Connected successfully')
+          });
+        } catch (err) {
+          return sendJson(res, 200, {
+            success: false,
+            message: typeof err.message === 'string' ? err.message : JSON.stringify(err.message)
+          });
+        }
       }
 
       if (pathname.startsWith('/api/accounts/') && pathname.endsWith('/test') && method === 'POST') {
         const id = pathname.replace('/api/accounts/', '').replace('/test', '');
         const body = await parseBody(req);
-        const result = await multiBrokerManager.testAccountLogin(id, body.totp);
+        let result;
+        try {
+          result = await multiBrokerManager.testAccountLogin(id, body.totp);
+        } catch (loginErr) {
+          autoExitEngine.log('ERROR', `Account ${id} login failed: ${loginErr.message}`);
+          return sendJson(res, 200, { success: false, message: loginErr.message });
+        }
         autoExitEngine.log('INFO', `Account ${id} tested: ${result.message}`);
-        return sendJson(res, 200, result);
+
+        let feedSnapshot = null;
+        if (result.success) {
+          feedSnapshot = await niftyFeedManager.subscribeOnBrokerLogin({
+            accountId: id,
+            broker: result.broker,
+            accountName: result.accountName
+          });
+        }
+
+        return sendJson(res, 200, {
+          ...result,
+          feedSubscribed: Boolean(result.success),
+          niftyFeed: feedSnapshot
+        });
       }
 
       if (pathname.startsWith('/api/accounts/') && method === 'PUT') {
@@ -237,7 +353,24 @@ const server = http.createServer(async (req, res) => {
         const body = await parseBody(req);
         const updated = multiBrokerManager.updateAccount(id, body);
         autoExitEngine.log('INFO', `Updated broker account: ${updated.name}`);
-        return sendJson(res, 200, { success: true, data: updated });
+
+        const loginSub = await multiBrokerManager.authenticateAndSubscribe(id, body.totp);
+        let feedSnapshot = null;
+        if (loginSub.authenticated && loginSub.subscribed) {
+          feedSnapshot = await niftyFeedManager.subscribeOnBrokerLogin({
+            accountId: id,
+            broker: updated.broker,
+            accountName: updated.name
+          });
+        }
+
+        return sendJson(res, 200, {
+          success: true,
+          data: updated,
+          loginResult: loginSub,
+          feedSubscribed: Boolean(loginSub.authenticated && loginSub.subscribed),
+          niftyFeed: feedSnapshot
+        });
       }
 
       if (pathname.startsWith('/api/accounts/') && method === 'DELETE') {
@@ -288,7 +421,8 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (pathname === '/api/funds' && method === 'GET') {
-        const funds = await multiBrokerManager.getAllFunds();
+        const force = parsedUrl.searchParams.get('force') === '1';
+        const funds = await multiBrokerManager.getAllFunds({ force });
         return sendJson(res, 200, { success: true, data: funds });
       }
 
@@ -296,7 +430,8 @@ const server = http.createServer(async (req, res) => {
          4. POSITIONS & CHARGES BREAKDOWN
          ============================================================ */
       if (pathname === '/api/positions' && method === 'GET') {
-        const rawPositions = await multiBrokerManager.getAllPositions();
+        const force = parsedUrl.searchParams.get('force') === '1';
+        const rawPositions = await multiBrokerManager.getAllPositions({ force });
         const openBalData = openingBalanceScheduler.getOpeningBalanceData();
         const openingBalance = Number(openBalData.openingBalance || 500000);
 
@@ -319,11 +454,18 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { success: true, data: enrichedPositions });
       }
 
+      if (pathname === '/api/holdings' && method === 'GET') {
+        const force = parsedUrl.searchParams.get('force') === '1';
+        const holdings = await multiBrokerManager.getAllHoldings({ force });
+        return sendJson(res, 200, { success: true, data: holdings });
+      }
+
       /* ============================================================
          5. ORDERS & TRADE EXECUTION
          ============================================================ */
       if (pathname === '/api/orders' && method === 'GET') {
-        const orders = await multiBrokerManager.getAllOrders();
+        const force = parsedUrl.searchParams.get('force') === '1';
+        const orders = await multiBrokerManager.getAllOrders({ force });
         return sendJson(res, 200, { success: true, data: orders });
       }
 
@@ -392,7 +534,36 @@ const server = http.createServer(async (req, res) => {
       }
 
       /* ============================================================
-         7. CONFIG & MODE
+         7. NIFTY SPOT & 9:00 AM OPTION CHAIN FEED
+         ============================================================ */
+      if (pathname === '/api/nifty-feed' && method === 'GET') {
+        return sendJson(res, 200, {
+          success: true,
+          data: niftyFeedManager.getSnapshot()
+        });
+      }
+
+      if (pathname === '/api/nifty-feed/start' && method === 'POST') {
+        const body = await parseBody(req);
+        const snapshot = niftyFeedManager.startFeed({
+          isAuto9AM: false,
+          recenter: body.recenter !== false
+        });
+        return sendJson(res, 200, { success: true, data: snapshot });
+      }
+
+      if (pathname === '/api/nifty-feed/stop' && method === 'POST') {
+        const snapshot = niftyFeedManager.stopFeed();
+        return sendJson(res, 200, { success: true, data: snapshot });
+      }
+
+      if (pathname === '/api/nifty-feed/recenter' && method === 'POST') {
+        const snapshot = niftyFeedManager.recenterAtm();
+        return sendJson(res, 200, { success: true, data: snapshot });
+      }
+
+      /* ============================================================
+         8. CONFIG & MODE
          ============================================================ */
       if (pathname === '/api/status' && method === 'GET') {
         const openBal = openingBalanceScheduler.getOpeningBalanceData();
@@ -413,7 +584,8 @@ const server = http.createServer(async (req, res) => {
         configManager.saveConfig({ mode: body.mode });
         multiBrokerManager.reloadBrokers();
         autoExitEngine.log('INFO', `Switched trading mode to: ${body.mode.toUpperCase()}`);
-        return sendJson(res, 200, { success: true, mode: currentConfig.mode });
+        const snapshot = await niftyFeedManager._tick();
+        return sendJson(res, 200, { success: true, mode: currentConfig.mode, niftyFeed: snapshot });
       }
 
       if (pathname === '/api/risk-settings' && method === 'POST') {

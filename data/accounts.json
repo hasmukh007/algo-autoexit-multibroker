@@ -1,1 +1,23 @@
-[]
+[
+  {
+    "id": "acc_angelone_1795602334437",
+    "broker": "angelone",
+    "name": "angel algo 1",
+    "enabled": true,
+    "apiKey": "jOjEZ6my",
+    "clientCode": "AAAJ132850",
+    "password": "1980",
+    "totpSecret": "MCGYGV2L7ISKLELVQTRKUQJ2RU"
+  },
+  {
+    "id": "acc_kotakneo_1795604175986",
+    "broker": "kotakneo",
+    "name": "kotak",
+    "enabled": true,
+    "consumerKey": "116986d5-5e9b-44a0-99e9-9af2302159e4",
+    "mobileNumber": "+919227228787",
+    "ucc": "118BB",
+    "mpin": "190914",
+    "totpSecret": "2RPFZONDB7XOVZLCSJLZKR5K64"
+  }
+]

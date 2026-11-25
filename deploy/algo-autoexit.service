@@ -1,0 +1,25 @@
+[Unit]
+Description=Multi-Broker Algo Auto-Exit Terminal (Kotak Neo, Angel One, Dhan)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/algo-autoexit-multibroker
+Environment=NODE_ENV=production
+Environment=TZ=Asia/Kolkata
+EnvironmentFile=-/opt/algo-autoexit-multibroker/.env
+ExecStart=/usr/bin/node /opt/algo-autoexit-multibroker/server.js
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=algo-autoexit
+
+[Install]
+WantedBy=multi-user.target

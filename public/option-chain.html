@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NIFTY Live Option Chain (10 ITM + ATM + 10 OTM) | Multi-Broker Terminal</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- LIVE NIFTY 50 TOP BAR -->
+    <div class="nifty-top-bar" id="niftyTopBar">
+      <div class="nifty-ticker-left">
+        <div class="nifty-index-group">
+          <span class="nifty-label">NIFTY 50</span>
+          <span class="nifty-ltp mono" id="topNiftyLtp">--</span>
+          <span class="nifty-change mono" id="topNiftyChange">-- (--)</span>
+        </div>
+        <div class="nifty-ohlc mono" id="topNiftyOhlc">
+          <span>O: <strong id="topNiftyOpen">--</strong></span>
+          <span>H: <strong id="topNiftyHigh">--</strong></span>
+          <span>L: <strong id="topNiftyLow">--</strong></span>
+        </div>
+        <div class="nifty-atm-pill">
+          <span class="pill-label">ATM:</span>
+          <strong class="mono" id="topNiftyAtm">--</strong>
+        </div>
+        <div class="nifty-feed-pill" id="topNiftyFeedPill">
+          <span class="pulse-dot"></span>
+          <span id="topNiftyFeedStatus">9:00 AM Feed: Initializing...</span>
+        </div>
+      </div>
+
+      <div class="nifty-ticker-right">
+        <a href="/" class="btn-option-chain-nav secondary-nav">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+          <span>Trading Terminal</span>
+        </a>
+      </div>
+    </div>
+
+    <!-- TOP NAVIGATION BAR -->
+    <header class="top-nav">
+      <div class="nav-left">
+        <div class="brand">
+          <div class="brand-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="3" y1="9" x2="21" y2="9"></line>
+              <line x1="3" y1="15" x2="21" y2="15"></line>
+              <line x1="12" y1="3" x2="12" y2="21"></line>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <span class="brand-title">NIFTY LIVE OPTION CHAIN</span>
+            <span class="brand-sub">9:00 AM AUTO-FEED • 10 ITM + ATM + 10 OTM (CALL &amp; PUT)</span>
+          </div>
+        </div>
+
+        <div class="datafeed-pill" title="Active Market Data Stream Source">
+          <span class="pill-label">Feed:</span>
+          <span class="pill-val" id="activeFeedText">Kotak Neo</span>
+          <span class="badge" id="sourceModeBadge">LIVE ONLY</span>
+        </div>
+
+        <div class="clock-display">
+          <span class="clock-time" id="istClock">--:--:-- IST</span>
+          <span class="market-pill" id="marketPill">Checking...</span>
+        </div>
+      </div>
+
+      <div class="nav-right">
+        <button class="btn-outline btn-sm" id="recenterAtmBtn" title="Recenter 10 ITM + ATM + 10 OTM strikes around current NIFTY Spot">
+          Recenter ATM
+        </button>
+        <button class="btn-primary btn-sm" id="toggleFeedBtn">
+          Start 9:00 AM Feed
+        </button>
+        <div class="conn-status" id="connStatus">
+          <span class="status-indicator online"></span>
+          <span class="status-label" id="connLabel">Connecting...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- OPTION CHAIN SUMMARY STRIP -->
+    <section class="metrics-grid oc-summary-grid">
+      <div class="metric-card hero-metric">
+        <span class="metric-title">9:00 AM FEED STATUS</span>
+        <div class="metric-value-row">
+          <span class="metric-val" id="ocFeedStateText">WAITING</span>
+          <span class="metric-badge" id="ocFeedTimeBadge">09:00 AM IST</span>
+        </div>
+        <div class="metric-sub-row">
+          <span>Expiry: <strong id="ocExpiryLabel" class="mono">--</strong></span>
+          <span>Last Tick: <strong id="ocLastTickTime" class="mono">--</strong></span>
+        </div>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-title">STRIKE COVERAGE (10 ITM + ATM + 10 OTM)</span>
+        <div class="metric-value-row">
+          <span class="metric-val mono" id="ocAtmStrikeDisplay">--</span>
+          <span class="metric-sub-label">ATM Center</span>
+        </div>
+        <div class="metric-sub-row">
+          <span>Range: <strong id="ocStrikeRange" class="mono">--</strong></span>
+          <span>Contracts: <strong id="ocContractCount" class="mono">42 (21 CE / 21 PE)</strong></span>
+        </div>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-title">OPEN INTEREST &amp; PCR</span>
+        <div class="metric-value-row">
+          <span class="metric-val mono" id="ocPcrDisplay">0.00</span>
+          <span class="metric-sub-label">Put/Call Ratio</span>
+        </div>
+        <div class="metric-sub-row">
+          <span>Total CE OI: <strong id="ocTotalCeOi" class="mono">--</strong></span>
+          <span>Total PE OI: <strong id="ocTotalPeOi" class="mono">--</strong></span>
+        </div>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-title">MAX OI LEVELS (SUPPORT / RESISTANCE)</span>
+        <div class="metric-value-row">
+          <span class="metric-val mono profit-text" id="ocMaxPeOiStrike">--</span>
+          <span class="metric-sub-label">vs</span>
+          <span class="metric-val mono loss-text" id="ocMaxCeOiStrike">--</span>
+        </div>
+        <div class="metric-sub-row">
+          <span>Max Put OI (Support)</span>
+          <span>Max Call OI (Resistance)</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- FILTER & LEGEND BAR -->
+    <section class="oc-controls-bar">
+      <div class="oc-filter-group">
+        <span class="oc-control-label">View Range:</span>
+        <button class="btn-xs btn-outline oc-filter-btn active" data-range="all">All 21 Strikes (10 ITM + ATM + 10 OTM)</button>
+        <button class="btn-xs btn-outline oc-filter-btn" data-range="5">ATM &plusmn; 5 Strikes</button>
+      </div>
+      <div class="oc-legend">
+        <span class="legend-item"><span class="legend-swatch itm-ce"></span> Call ITM (Strikes &lt; ATM)</span>
+        <span class="legend-item"><span class="legend-swatch atm"></span> ATM Strike</span>
+        <span class="legend-item"><span class="legend-swatch itm-pe"></span> Put ITM (Strikes &gt; ATM)</span>
+      </div>
+    </section>
+
+    <!-- LIVE OPTION CHAIN TABLE -->
+    <main class="main-content" style="padding-top: 10px;">
+      <div class="table-container oc-table-wrap">
+        <table class="data-table oc-table" id="optionChainTable">
+          <thead>
+            <tr class="oc-group-header">
+              <th colspan="8" class="text-center oc-calls-head">CALLS (CE) — 10 ITM + ATM + 10 OTM</th>
+              <th class="text-center oc-strike-head">STRIKE</th>
+              <th colspan="8" class="text-center oc-puts-head">PUTS (PE) — 10 ITM + ATM + 10 OTM</th>
+            </tr>
+            <tr>
+              <th>OI Built Up</th>
+              <th class="text-right">OI</th>
+              <th class="text-right">Vol</th>
+              <th class="text-right">IV %</th>
+              <th class="text-right">Bid / Ask</th>
+              <th class="text-right">Chg (%)</th>
+              <th class="text-right">Call LTP</th>
+              <th class="text-center">Trade</th>
+              <th class="text-center oc-strike-col-head">Strike</th>
+              <th class="text-center">Trade</th>
+              <th class="text-right">Put LTP</th>
+              <th class="text-right">Chg (%)</th>
+              <th class="text-right">Bid / Ask</th>
+              <th class="text-right">IV %</th>
+              <th class="text-right">Vol</th>
+              <th class="text-right">OI</th>
+              <th>OI Built Up</th>
+            </tr>
+          </thead>
+          <tbody id="optionChainBody">
+            <tr>
+              <td colspan="17" class="empty-state">Connecting to live NIFTY option feed...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+
+  <!-- QUICK ORDER MODAL FROM OPTION CHAIN -->
+  <div class="modal-backdrop" id="ocOrderModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="ocOrderModalTitle">Quick Option Order</h3>
+        <button class="btn-close" id="closeOcOrderModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="ocOrderForm">
+          <input type="hidden" id="ocOrdSymbol">
+          <input type="hidden" id="ocOrdSide">
+          <div class="modal-pos-summary" style="grid-template-columns: repeat(2, 1fr);">
+            <div>Contract: <strong id="ocOrdSymbolLabel">--</strong></div>
+            <div>Current LTP: <strong class="mono" id="ocOrdLtpLabel">--</strong></div>
+          </div>
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <label for="ocOrdBroker">Broker Account</label>
+              <select id="ocOrdBroker" required></select>
+            </div>
+            <div class="form-group">
+              <label for="ocOrdProduct">Product</label>
+              <select id="ocOrdProduct">
+                <option value="MIS" selected>MIS (Intraday)</option>
+                <option value="NRML">NRML (Overnight)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <label for="ocOrdQty">Quantity (NIFTY Lot = 75)</label>
+              <input type="number" id="ocOrdQty" value="75" min="1" step="1" required>
+            </div>
+            <div class="form-group">
+              <label for="ocOrdType">Order Type</label>
+              <select id="ocOrdType">
+                <option value="MKT" selected>MARKET (MKT)</option>
+                <option value="L">LIMIT (L)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group" id="ocOrdPriceGroup" style="display: none; margin-bottom: 12px;">
+            <label for="ocOrdPrice">Limit Price (₹)</label>
+            <input type="number" id="ocOrdPrice" step="0.05" value="0">
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn-secondary" id="cancelOcOrderBtn">Cancel</button>
+            <button type="submit" class="btn-primary" id="submitOcOrderBtn">Place Order</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+  <script src="option-chain.js"></script>
+</body>
+</html>

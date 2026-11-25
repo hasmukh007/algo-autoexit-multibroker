@@ -22,10 +22,21 @@ const state = {
     overallNetProfitPct: 0,
     openPositionsCount: 0
   },
-  previousLtps: new Map()
+  previousLtps: new Map(),
+  previousNiftyLtp: null
 };
 
 const DOM = {
+  // Top NIFTY Live Bar
+  topNiftyLtp: document.getElementById('topNiftyLtp'),
+  topNiftyChange: document.getElementById('topNiftyChange'),
+  topNiftyOpen: document.getElementById('topNiftyOpen'),
+  topNiftyHigh: document.getElementById('topNiftyHigh'),
+  topNiftyLow: document.getElementById('topNiftyLow'),
+  topNiftyAtm: document.getElementById('topNiftyAtm'),
+  topNiftyFeedPill: document.getElementById('topNiftyFeedPill'),
+  topNiftyFeedStatus: document.getElementById('topNiftyFeedStatus'),
+
   // Top Nav
   modeBadge: document.getElementById('modeBadge'),
   modeText: document.getElementById('modeText'),
@@ -87,6 +98,7 @@ const DOM = {
   currentFeedBadge: document.getElementById('currentFeedBadge'),
   feedKotakRadio: document.getElementById('feedKotakRadio'),
   feedAngelRadio: document.getElementById('feedAngelRadio'),
+  feedDhanRadio: document.getElementById('feedDhanRadio'),
   logsContainer: document.getElementById('logsContainer'),
   clearLogsBtn: document.getElementById('clearLogsBtn'),
 
@@ -125,6 +137,7 @@ const DOM = {
   dhanFields: document.getElementById('dhanFields'),
   dhanClientId: document.getElementById('dhanClientId'),
   dhanAccessToken: document.getElementById('dhanAccessToken'),
+  accOneTimeTotp: document.getElementById('accOneTimeTotp'),
   testAccConnBtn: document.getElementById('testAccConnBtn'),
 
   autoExitModal: document.getElementById('autoExitModal'),
@@ -160,15 +173,31 @@ function formatCurrency(amount) {
   return (num < 0 ? '-₹' : '₹') + formatted;
 }
 
+function toDisplayText(val, fallback = 'Unknown error') {
+  if (val === undefined || val === null) return fallback;
+  if (typeof val === 'string') return val;
+  if (val instanceof Error) return val.message || fallback;
+  if (typeof val === 'object') {
+    const candidate = val.message || val.errMsg || val.error || val.description;
+    if (typeof candidate === 'string') return candidate;
+    try {
+      return JSON.stringify(val);
+    } catch (e) {
+      return fallback;
+    }
+  }
+  return String(val);
+}
+
 function showToast(message, type = 'info') {
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
-  toast.innerHTML = `<span>${message}</span>`;
+  toast.innerHTML = `<span>${toDisplayText(message, '')}</span>`;
   DOM.toastContainer.appendChild(toast);
   setTimeout(() => {
     toast.style.opacity = '0';
     setTimeout(() => toast.remove(), 300);
-  }, 4000);
+  }, 4500);
 }
 
 // Update live IST Clock
@@ -236,6 +265,23 @@ function initEventSource() {
     } catch (err) {}
   });
 
+  es.addEventListener('nifty_tick', e => {
+    try {
+      const snapshot = JSON.parse(e.data);
+      updateTopNiftyTicker(snapshot);
+    } catch (err) {}
+  });
+
+  es.addEventListener('feed_subscribed', e => {
+    try {
+      const info = JSON.parse(e.data);
+      const label = formatFeedSourceLabel(info.broker);
+      DOM.activeFeedText.textContent = label;
+      DOM.currentFeedBadge.textContent = `Current: ${label}`;
+      showToast(`Subscribed live NIFTY + ${info.totalContracts} Option Chain feed on ${label} (${info.accountName || 'Active'})`, 'success');
+    } catch (err) {}
+  });
+
   es.addEventListener('log', e => {
     try {
       const log = JSON.parse(e.data);
@@ -258,12 +304,18 @@ function initEventSource() {
   };
 }
 
+function formatFeedSourceLabel(source) {
+  if (source === 'angelone') return 'Angel One';
+  if (source === 'dhan') return 'Dhan';
+  return 'Kotak Neo';
+}
+
 function handleMarketTick(payload) {
   if (payload.mode) updateModeUI(payload.mode);
 
   if (payload.dataFeedSource) {
     state.dataFeedSource = payload.dataFeedSource;
-    DOM.activeFeedText.textContent = payload.dataFeedSource === 'angelone' ? 'Angel One' : 'Kotak Neo';
+    DOM.activeFeedText.textContent = formatFeedSourceLabel(payload.dataFeedSource);
     DOM.currentFeedBadge.textContent = `Current: ${DOM.activeFeedText.textContent}`;
   }
 
@@ -357,8 +409,11 @@ async function loadStatus() {
 
       updateModeUI(data.mode);
       DOM.openingBalanceDisplay.textContent = formatCurrency(state.openingBalance.openingBalance);
-      DOM.activeFeedText.textContent = data.dataFeedSource === 'angelone' ? 'Angel One' : 'Kotak Neo';
+      DOM.activeFeedText.textContent = formatFeedSourceLabel(data.dataFeedSource);
       DOM.currentFeedBadge.textContent = `Current: ${DOM.activeFeedText.textContent}`;
+      if (DOM.feedKotakRadio) DOM.feedKotakRadio.checked = data.dataFeedSource === 'kotakneo';
+      if (DOM.feedAngelRadio) DOM.feedAngelRadio.checked = data.dataFeedSource === 'angelone';
+      if (DOM.feedDhanRadio) DOM.feedDhanRadio.checked = data.dataFeedSource === 'dhan';
       DOM.engineStatusText.textContent = data.autoExitRunning ? 'ACTIVE' : 'PAUSED';
       DOM.autoExitToggle.checked = Boolean(data.autoExitRunning);
 
@@ -390,9 +445,9 @@ function updateBrokerSelect() {
   });
 }
 
-async function loadPositions() {
+async function loadPositions(force = false) {
   try {
-    const res = await fetch('/api/positions');
+    const res = await fetch(force ? '/api/positions?force=1' : '/api/positions');
     const data = await res.json();
     if (data.success && Array.isArray(data.data)) {
       state.positions = data.data;
@@ -401,9 +456,9 @@ async function loadPositions() {
   } catch (e) {}
 }
 
-async function loadOrders() {
+async function loadOrders(force = false) {
   try {
-    const res = await fetch('/api/orders');
+    const res = await fetch(force ? '/api/orders?force=1' : '/api/orders');
     const data = await res.json();
     if (data.success && Array.isArray(data.data)) {
       state.orders = data.data;
@@ -592,9 +647,10 @@ function renderAccountsTable() {
         <td><strong>${acc.name}</strong></td>
         <td class="mono">${acc.clientCode || 'Configured'}</td>
         <td>
-          <span class="badge" style="${acc.isAuthenticated ? 'background: var(--profit-bg); color: var(--profit-color);' : 'background: var(--warning-bg); color: var(--warning-color);'}">
-            ${acc.isAuthenticated ? 'AUTHENTICATED' : 'READY'}
+          <span class="badge" style="${acc.isAuthenticated ? 'background: var(--profit-bg); color: var(--profit-color);' : (acc.lastError ? 'background: var(--loss-bg); color: var(--loss-color);' : 'background: var(--warning-bg); color: var(--warning-color);')}">
+            ${acc.isAuthenticated ? 'AUTHENTICATED' : (acc.lastError ? 'AUTH ERROR' : 'READY')}
           </span>
+          ${acc.lastError ? `<div style="font-size: 10px; color: var(--loss-color); margin-top: 3px; max-width: 260px;">${toDisplayText(acc.lastError)}</div>` : ''}
         </td>
         <td class="mono">${acc.enabled ? 'Active' : 'Disabled'}</td>
         <td>
@@ -609,12 +665,32 @@ function renderAccountsTable() {
   document.querySelectorAll('.test-acc-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id');
-      showToast(`Testing login for ${id}...`, 'info');
+      showToast(`Logging in & subscribing feed for ${id}...`, 'info');
       try {
-        const res = await fetch(`/api/accounts/${id}/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-        const d = await res.json();
-        if (d.success) showToast(d.message || 'Login successful', 'success');
-        else showToast(d.message || 'Login failed', 'error');
+        let res = await fetch(`/api/accounts/${id}/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        let d = await res.json();
+        if (!d.success && d.message && d.message.toLowerCase().includes('totp')) {
+          const totp = prompt('Enter 6-digit TOTP to login & subscribe live feed:');
+          if (totp) {
+            res = await fetch(`/api/accounts/${id}/test`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ totp: totp.trim() })
+            });
+            d = await res.json();
+          }
+        }
+        if (d.success) {
+          showToast(
+            d.feedSubscribed
+              ? `${d.message || 'Login successful'} • Feed subscribed!`
+              : (d.message || 'Login successful'),
+            'success'
+          );
+          if (d.niftyFeed) updateTopNiftyTicker(d.niftyFeed);
+        } else {
+          showToast(d.message || 'Login failed', 'error');
+        }
         loadAccounts();
       } catch (e) {
         showToast(e.message, 'error');
@@ -872,8 +948,7 @@ function switchBrokerFields(broker) {
   DOM.dhanFields.style.display = broker === 'dhan' ? 'block' : 'none';
 }
 
-DOM.accountForm.addEventListener('submit', async e => {
-  e.preventDefault();
+function buildAccountPayloadFromModal() {
   const broker = DOM.accBroker.value;
   const payload = {
     broker,
@@ -882,20 +957,56 @@ DOM.accountForm.addEventListener('submit', async e => {
   };
 
   if (broker === 'kotakneo') {
-    payload.consumerKey = DOM.kotakConsumerKey.value;
-    payload.mobileNumber = DOM.kotakMobile.value;
-    payload.ucc = DOM.kotakUcc.value;
-    payload.mpin = DOM.kotakMpin.value;
-    payload.totpSecret = DOM.kotakTotpSecret.value;
+    payload.consumerKey = DOM.kotakConsumerKey.value.trim();
+    payload.mobileNumber = DOM.kotakMobile.value.trim();
+    payload.ucc = DOM.kotakUcc.value.trim();
+    payload.mpin = DOM.kotakMpin.value.trim();
+    payload.totpSecret = DOM.kotakTotpSecret.value.trim();
   } else if (broker === 'angelone') {
-    payload.apiKey = DOM.angelApiKey.value;
-    payload.clientCode = DOM.angelClientCode.value;
+    payload.apiKey = DOM.angelApiKey.value.trim();
+    payload.clientCode = DOM.angelClientCode.value.trim();
     payload.password = DOM.angelPassword.value;
-    payload.totpSecret = DOM.angelTotpSecret.value;
+    payload.totpSecret = DOM.angelTotpSecret.value.trim();
   } else if (broker === 'dhan') {
-    payload.clientId = DOM.dhanClientId.value;
-    payload.accessToken = DOM.dhanAccessToken.value;
+    payload.clientId = DOM.dhanClientId.value.trim();
+    payload.accessToken = DOM.dhanAccessToken.value.trim();
   }
+
+  if (DOM.accOneTimeTotp && DOM.accOneTimeTotp.value.trim()) {
+    payload.totp = DOM.accOneTimeTotp.value.trim();
+  }
+  return payload;
+}
+
+if (DOM.testAccConnBtn) {
+  DOM.testAccConnBtn.addEventListener('click', async () => {
+    const payload = buildAccountPayloadFromModal();
+    if (!payload.totp && payload.broker !== 'dhan' && !payload.totpSecret) {
+      const entered = prompt('Enter 6-digit TOTP to test connection:');
+      if (entered) payload.totp = entered.trim();
+    }
+    showToast(`Testing ${formatFeedSourceLabel(payload.broker)} connection...`, 'info');
+    try {
+      const res = await fetch('/api/accounts/test-credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const d = await res.json();
+      if (d.success) {
+        showToast(toDisplayText(d.message, 'Connection verified!'), 'success');
+      } else {
+        showToast(toDisplayText(d.message, 'Connection test failed'), 'error');
+      }
+    } catch (err) {
+      showToast(toDisplayText(err, 'Connection test failed'), 'error');
+    }
+  });
+}
+
+DOM.accountForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  const payload = buildAccountPayloadFromModal();
 
   try {
     const res = await fetch('/api/accounts', {
@@ -905,9 +1016,18 @@ DOM.accountForm.addEventListener('submit', async e => {
     });
     const d = await res.json();
     if (d.success) {
-      showToast('Account added successfully!', 'success');
+      if (d.feedSubscribed) {
+        showToast(`Account added, logged in & subscribed to NIFTY + Option Chain feed (${formatFeedSourceLabel(d.dataFeedSource)})!`, 'success');
+        if (d.niftyFeed) updateTopNiftyTicker(d.niftyFeed);
+      } else {
+        const reason = d.loginResult && d.loginResult.message ? ` (${d.loginResult.message})` : '';
+        showToast(`Account added! Click Test Login with TOTP to subscribe feed${reason}.`, 'info');
+      }
+      if (DOM.accOneTimeTotp) DOM.accOneTimeTotp.value = '';
       DOM.accountModal.classList.remove('active');
       loadAccounts();
+    } else {
+      showToast(d.message || 'Failed to add account', 'error');
     }
   } catch (err) {
     showToast(err.message, 'error');
@@ -916,13 +1036,15 @@ DOM.accountForm.addEventListener('submit', async e => {
 
 // Market Data Feed Switching
 DOM.switchFeedBtn.addEventListener('click', async () => {
-  const current = state.dataFeedSource;
-  const target = current === 'kotakneo' ? 'angelone' : 'kotakneo';
+  const order = ['kotakneo', 'angelone', 'dhan'];
+  const idx = order.indexOf(state.dataFeedSource);
+  const target = order[(idx + 1) % order.length];
   await setFeedSource(target);
 });
 
 DOM.feedKotakRadio.addEventListener('change', () => setFeedSource('kotakneo'));
 DOM.feedAngelRadio.addEventListener('change', () => setFeedSource('angelone'));
+if (DOM.feedDhanRadio) DOM.feedDhanRadio.addEventListener('change', () => setFeedSource('dhan'));
 
 async function setFeedSource(source) {
   try {
@@ -934,10 +1056,11 @@ async function setFeedSource(source) {
     const d = await res.json();
     if (d.success) {
       state.dataFeedSource = source;
-      DOM.activeFeedText.textContent = source === 'angelone' ? 'Angel One' : 'Kotak Neo';
+      DOM.activeFeedText.textContent = formatFeedSourceLabel(source);
       DOM.currentFeedBadge.textContent = `Current: ${DOM.activeFeedText.textContent}`;
-      DOM.feedKotakRadio.checked = source === 'kotakneo';
-      DOM.feedAngelRadio.checked = source === 'angelone';
+      if (DOM.feedKotakRadio) DOM.feedKotakRadio.checked = source === 'kotakneo';
+      if (DOM.feedAngelRadio) DOM.feedAngelRadio.checked = source === 'angelone';
+      if (DOM.feedDhanRadio) DOM.feedDhanRadio.checked = source === 'dhan';
       showToast(`Market data subscription switched to ${DOM.activeFeedText.textContent}`, 'info');
     }
   } catch (e) {}
@@ -955,6 +1078,7 @@ DOM.toggleModeBtn.addEventListener('click', async () => {
   if (d.success) {
     showToast(`Switched mode to ${newMode.toUpperCase()}`, 'info');
     updateModeUI(newMode);
+    if (d.niftyFeed) updateTopNiftyTicker(d.niftyFeed);
     loadPositions();
     loadOrders();
     loadAccounts();
@@ -1056,13 +1180,79 @@ DOM.tabBtns.forEach(btn => {
   });
 });
 
-DOM.refreshPositionsBtn.addEventListener('click', loadPositions);
-DOM.refreshOrdersBtn.addEventListener('click', loadOrders);
+DOM.refreshPositionsBtn.addEventListener('click', () => loadPositions(true));
+DOM.refreshOrdersBtn.addEventListener('click', () => loadOrders(true));
 DOM.clearLogsBtn.addEventListener('click', () => DOM.logsContainer.innerHTML = '');
+
+function updateTopNiftyTicker(snapshot) {
+  if (!snapshot || !snapshot.spot || !DOM.topNiftyLtp) return;
+  const spot = snapshot.spot;
+  const hasSpot = spot.ltp !== null && spot.ltp !== undefined;
+  const prev = state.previousNiftyLtp;
+
+  if (hasSpot) {
+    const ltp = Number(spot.ltp);
+    DOM.topNiftyLtp.textContent = ltp.toLocaleString('en-IN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    });
+
+    if (prev !== null && ltp !== prev) {
+      DOM.topNiftyLtp.classList.remove('flash-up', 'flash-down');
+      void DOM.topNiftyLtp.offsetWidth;
+      DOM.topNiftyLtp.classList.add(ltp > prev ? 'flash-up' : 'flash-down');
+    }
+    state.previousNiftyLtp = ltp;
+
+    const chg = Number(spot.change || 0);
+    const chgPct = Number(spot.changePct || 0);
+    const sign = chg >= 0 ? '+' : '';
+    DOM.topNiftyChange.textContent = `${sign}${chg.toFixed(2)} (${sign}${chgPct.toFixed(2)}%)`;
+    DOM.topNiftyChange.className = `nifty-change mono ${chg >= 0 ? 'profit-text' : 'loss-text'}`;
+  } else {
+    DOM.topNiftyLtp.textContent = '--';
+    DOM.topNiftyChange.textContent = 'Awaiting Live Quote';
+    DOM.topNiftyChange.className = 'nifty-change mono';
+  }
+
+  if (DOM.topNiftyOpen) DOM.topNiftyOpen.textContent = spot.open !== null && spot.open !== undefined ? Number(spot.open).toFixed(2) : '--';
+  if (DOM.topNiftyHigh) DOM.topNiftyHigh.textContent = spot.high !== null && spot.high !== undefined ? Number(spot.high).toFixed(2) : '--';
+  if (DOM.topNiftyLow) DOM.topNiftyLow.textContent = spot.low !== null && spot.low !== undefined ? Number(spot.low).toFixed(2) : '--';
+  if (DOM.topNiftyAtm) DOM.topNiftyAtm.textContent = snapshot.atmStrike || '--';
+
+  if (snapshot.feedState && DOM.topNiftyFeedStatus && DOM.topNiftyFeedPill) {
+    const fs = snapshot.feedState;
+    const brokerTag = fs.feedSubscribed && fs.subscribedBroker ? ` • ${formatFeedSourceLabel(fs.subscribedBroker)}` : '';
+    const isLive = fs.sourceMode === 'live_broker';
+    if (fs.isRunning) {
+      DOM.topNiftyFeedPill.className = isLive ? 'nifty-feed-pill active' : 'nifty-feed-pill waiting';
+      DOM.topNiftyFeedStatus.textContent = isLive
+        ? `9:00 AM Live Feed${brokerTag} • 10 ITM + ATM + 10 OTM CE/PE (${fs.totalContracts || 42})`
+        : `9:00 AM Feed${brokerTag} • Awaiting Live Broker Quote`;
+    } else if (fs.status === 'WAITING_9AM') {
+      DOM.topNiftyFeedPill.className = 'nifty-feed-pill waiting';
+      DOM.topNiftyFeedStatus.textContent = `Live Option Feed Scheduled for ${fs.scheduledTimeIST || '09:00 IST'}`;
+    } else {
+      DOM.topNiftyFeedPill.className = 'nifty-feed-pill stopped';
+      DOM.topNiftyFeedStatus.textContent = 'Option Feed Paused';
+    }
+  }
+}
+
+async function loadNiftyFeedSnapshot() {
+  try {
+    const res = await fetch('/api/nifty-feed');
+    const d = await res.json();
+    if (d.success && d.data) {
+      updateTopNiftyTicker(d.data);
+    }
+  } catch (e) {}
+}
 
 // Initialization
 window.addEventListener('DOMContentLoaded', () => {
   loadStatus();
+  loadNiftyFeedSnapshot();
   loadPositions();
   loadOrders();
   loadAccounts();

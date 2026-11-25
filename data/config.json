@@ -5,7 +5,7 @@
   "ucc": "",
   "mpin": "",
   "totpSecret": "",
-  "baseUrl": "https://napi.kotaksecurities.com",
+  "baseUrl": "https://mis.kotaksecurities.com",
   "riskSettings": {
     "maxDailyLossINR": 2000,
     "targetDailyProfitINR": 5000,
@@ -13,7 +13,7 @@
     "trailingSLPoints": 10,
     "autoExitEnabled": true,
     "targetDailyNetProfitPct": 15,
-    "maxDailyLossNetPct": 12,
+    "maxDailyLossNetPct": 10,
     "nearThresholdBufferPct": 98
   }
 }
