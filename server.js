@@ -7,6 +7,8 @@ const OpeningBalanceScheduler = require('./lib/openingBalanceScheduler');
 const ChargesCalculator = require('./lib/chargesCalculator');
 const AutoExitEngine = require('./lib/autoExitEngine');
 const { NiftyFeedManager } = require('./lib/niftyFeedManager');
+const { NiftyCandleManager } = require('./lib/niftyCandleManager');
+const AutoLoginScheduler = require('./lib/autoLoginScheduler');
 const configManager = require('./lib/configManager');
 const totpHelper = require('./lib/totpHelper');
 
@@ -25,6 +27,12 @@ autoExitEngine.start();
 
 // Instantiate 9:00 AM NIFTY Spot & 10 ITM + ATM + 10 OTM Option Chain Feed Manager
 const niftyFeedManager = new NiftyFeedManager(multiBrokerManager, configManager);
+
+// Instantiate NIFTY 3-Minute Candle Store (SQLite + WebSocket live aggregation + 3-day REST backfill)
+const niftyCandleManager = new NiftyCandleManager(multiBrokerManager);
+
+// Instantiate 8:59 AM IST Auto-Login Scheduler for all brokers
+const autoLoginScheduler = new AutoLoginScheduler(multiBrokerManager);
 
 
 // Active SSE client connections
@@ -71,16 +79,71 @@ niftyFeedManager.on('feed_subscribed', info => {
   );
   broadcastSSE('feed_subscribed', info);
   broadcastSSE('nifty_tick', niftyFeedManager.getSnapshot());
+  niftyCandleManager.backfillIfEmpty(3).catch(() => {});
 });
 
 niftyFeedManager.on('tick', snapshot => {
+  if (snapshot && snapshot.spot && snapshot.spot.ltp > 0 && snapshot.feedState && snapshot.feedState.sourceMode === 'live_broker') {
+    niftyCandleManager.onSpotTick(snapshot.spot.ltp, snapshot.timestamp || Date.now());
+  }
   if (sseClients.size > 0) {
     broadcastSSE('nifty_tick', snapshot);
   }
 });
 
+multiBrokerManager.on('ws_tick', ({ broker, tick }) => {
+  if (!tick || !(tick.ltp > 0)) return;
+  const isNiftySpotTick =
+    (broker === 'angelone' && String(tick.token) === '99926000') ||
+    (broker === 'kotakneo' && (String(tick.token) === 'Nifty 50' || String(tick.key) === 'nse_cm|Nifty 50')) ||
+    (broker === 'dhan' && String(tick.securityId) === '13' && Number(tick.exchangeSegmentId) === 0);
+
+  if (isNiftySpotTick) {
+    niftyCandleManager.onSpotTick(tick.ltp, tick.receivedAt || Date.now(), Number(tick.volume || 0));
+  }
+});
+
+niftyCandleManager.on('candle_update', payload => {
+  if (sseClients.size > 0) {
+    broadcastSSE('nifty_candle', payload);
+  }
+});
+
+niftyCandleManager.on('history_backfilled', info => {
+  autoExitEngine.log('INFO', `Loaded ${info.added} NIFTY 3-minute historical candles from ${(info.broker || 'broker').toUpperCase()} into SQLite.`);
+  if (sseClients.size > 0) {
+    broadcastSSE('nifty_candles_reset', {
+      candles: niftyCandleManager.getCandles({ limit: 600 }),
+      count: niftyCandleManager.getCandleCount()
+    });
+  }
+});
+
 multiBrokerManager.on('order_update', evt => {
   autoExitEngine.log('INFO', `Order/trade update received on ${String(evt.broker || '').toUpperCase()} WebSocket — refreshing net positions & holdings.`);
+});
+
+autoLoginScheduler.on('auto_login_completed', async payload => {
+  const succeeded = (payload.results || []).filter(r => r.success && !r.skipped);
+  const failed = (payload.results || []).filter(r => !r.success);
+  autoExitEngine.log(
+    'INFO',
+    `8:59 AM Auto-Login completed (${payload.timeIST}): ${succeeded.length} connected, ${failed.length} failed.`,
+    payload.results
+  );
+
+  for (const r of succeeded) {
+    if (!niftyFeedManager.feedState.feedSubscribed || r.broker === multiBrokerManager.getDataFeedSource()) {
+      await niftyFeedManager.subscribeOnBrokerLogin({
+        accountId: r.accountId,
+        broker: r.broker,
+        accountName: r.accountName
+      });
+    }
+  }
+  if (succeeded.length > 0) {
+    niftyCandleManager.backfillIfEmpty(3).catch(() => {});
+  }
 });
 
 // Background tick broadcaster: pushes enriched positions, charges, Net P&L, 9:00 AM balance
@@ -190,6 +253,7 @@ function serveStatic(req, res, parsedUrl) {
   let pathname = parsedUrl.pathname;
   if (pathname === '/' || pathname === '') pathname = '/index.html';
   if (pathname === '/option-chain') pathname = '/option-chain.html';
+  if (pathname === '/chart') pathname = '/chart.html';
 
   const safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
   const filePath = path.join(__dirname, 'public', safePath);
@@ -290,6 +354,21 @@ const server = http.createServer(async (req, res) => {
           dataFeedSource: multiBrokerManager.getDataFeedSource(),
           niftyFeed: feedSnapshot
         });
+      }
+
+      if (pathname === '/api/accounts/login-all' && method === 'POST') {
+        const results = await multiBrokerManager.loginAllBrokers();
+        const succeeded = results.filter(r => r.success && !r.skipped);
+        for (const r of succeeded) {
+          if (!niftyFeedManager.feedState.feedSubscribed || r.broker === multiBrokerManager.getDataFeedSource()) {
+            await niftyFeedManager.subscribeOnBrokerLogin({
+              accountId: r.accountId,
+              broker: r.broker,
+              accountName: r.accountName
+            });
+          }
+        }
+        return sendJson(res, 200, { success: true, results });
       }
 
       if (pathname === '/api/accounts/test-credentials' && method === 'POST') {
@@ -563,6 +642,39 @@ const server = http.createServer(async (req, res) => {
       }
 
       /* ============================================================
+         7b. NIFTY 3-MINUTE CHART (SQLite + WebSocket + 3-Day Backfill)
+         ============================================================ */
+      if (pathname === '/api/nifty-chart' && method === 'GET') {
+        const days = Number(parsedUrl.searchParams.get('days') || 3);
+        const limit = Number(parsedUrl.searchParams.get('limit') || 600);
+        let backfillInfo = { backfilled: false, added: 0 };
+        if (niftyCandleManager.getCandleCount() === 0) {
+          backfillInfo = await niftyCandleManager.backfillIfEmpty(days);
+        }
+        return sendJson(res, 200, {
+          success: true,
+          symbol: 'NIFTY',
+          timeframe: '3m',
+          count: niftyCandleManager.getCandleCount(),
+          backfilled: Boolean(backfillInfo.backfilled),
+          candles: niftyCandleManager.getCandles({ limit }),
+          currentCandle: niftyCandleManager.currentCandle,
+          spot: niftyFeedManager.getSnapshot().spot
+        });
+      }
+
+      if (pathname === '/api/nifty-chart/backfill' && method === 'POST') {
+        const body = await parseBody(req);
+        const days = Number(body.days || 3);
+        const result = await niftyCandleManager.backfillFromBroker(days);
+        return sendJson(res, 200, {
+          success: true,
+          ...result,
+          candles: niftyCandleManager.getCandles({ limit: 600 })
+        });
+      }
+
+      /* ============================================================
          8. CONFIG & MODE
          ============================================================ */
       if (pathname === '/api/status' && method === 'GET') {
@@ -613,6 +725,16 @@ server.listen(PORT, () => {
   console.log(`  Brokers Supported: Kotak Neo, Angel One, Dhan`);
   console.log(`  9:00 AM Balance Scheduler: ACTIVE`);
   console.log(`  Charges & Net Profit % Engine: ACTIVE`);
+  console.log(`  NIFTY 3m SQLite Chart Store: ${niftyCandleManager.getCandleCount()} candles`);
   console.log(`  Local URL: http://localhost:${PORT}`);
   console.log(`=====================================================`);
 });
+
+function shutdownGracefully() {
+  autoLoginScheduler.stop();
+  niftyFeedManager.stopBackgroundLoops();
+  niftyCandleManager.close();
+  process.exit(0);
+}
+process.on('SIGINT', shutdownGracefully);
+process.on('SIGTERM', shutdownGracefully);

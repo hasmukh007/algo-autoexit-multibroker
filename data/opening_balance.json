@@ -1,8 +1,25 @@
 {
-  "date": "2026-11-25",
+  "date": "2026-11-26",
   "openingBalance": 875000,
-  "capturedAt": "2026-11-25T10:08:41.628Z",
-  "isAutoCaptured": true,
-  "accounts": [],
-  "timeFormatted": "3:38:41 pm IST"
+  "capturedAt": "2026-11-26T02:54:26.695Z",
+  "isAutoCaptured": false,
+  "accounts": [
+    {
+      "id": "acc_angelone_1795602334437",
+      "broker": "angelone",
+      "name": "angel algo 1",
+      "availableCash": 0,
+      "utilizedMargin": 0,
+      "totalBalance": 0
+    },
+    {
+      "id": "acc_kotakneo_1795604175986",
+      "broker": "kotakneo",
+      "name": "kotak",
+      "availableCash": 0,
+      "utilizedMargin": 0,
+      "totalBalance": 0
+    }
+  ],
+  "timeFormatted": "8:24:26 am IST"
 }

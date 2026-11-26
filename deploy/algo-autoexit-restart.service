@@ -1,0 +1,6 @@
+[Unit]
+Description=Daily 8:55 AM IST Restart of Algo Auto-Exit Terminal
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl restart algo-autoexit.service

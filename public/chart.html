@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NIFTY 3-Minute Live Chart | Multi-Broker Terminal</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js" defer></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- LIVE NIFTY 50 TOP BAR -->
+    <div class="nifty-top-bar" id="niftyTopBar">
+      <div class="nifty-ticker-left">
+        <div class="nifty-index-group">
+          <span class="nifty-label">NIFTY 50</span>
+          <span class="nifty-ltp mono" id="topNiftyLtp">--</span>
+          <span class="nifty-change mono" id="topNiftyChange">-- (--)</span>
+        </div>
+        <div class="nifty-ohlc mono" id="topNiftyOhlc">
+          <span>O: <strong id="topNiftyOpen">--</strong></span>
+          <span>H: <strong id="topNiftyHigh">--</strong></span>
+          <span>L: <strong id="topNiftyLow">--</strong></span>
+        </div>
+        <div class="nifty-atm-pill">
+          <span class="pill-label">ATM:</span>
+          <strong class="mono" id="topNiftyAtm">--</strong>
+        </div>
+        <div class="nifty-feed-pill" id="topNiftyFeedPill">
+          <span class="pulse-dot"></span>
+          <span id="topNiftyFeedStatus">9:00 AM Feed: Initializing...</span>
+        </div>
+      </div>
+
+      <div class="nifty-ticker-right">
+        <a href="/option-chain" class="btn-option-chain-nav secondary-nav">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="3" y1="9" x2="21" y2="9"></line>
+            <line x1="3" y1="15" x2="21" y2="15"></line>
+            <line x1="12" y1="3" x2="12" y2="21"></line>
+          </svg>
+          <span>Option Chain</span>
+        </a>
+        <a href="/" class="btn-option-chain-nav secondary-nav">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+          <span>Trading Terminal</span>
+        </a>
+      </div>
+    </div>
+
+    <!-- TOP NAVIGATION BAR -->
+    <header class="top-nav">
+      <div class="nav-left">
+        <div class="brand">
+          <div class="brand-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 17 9 11 13 15 21 7"></polyline>
+              <polyline points="14 7 21 7 21 14"></polyline>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <span class="brand-title">NIFTY 50 • 3 MINUTE CHART</span>
+            <span class="brand-sub">WEBSOCKET REAL-TIME CANDLES • SQLITE DB • 3-DAY REST BACKFILL</span>
+          </div>
+        </div>
+
+        <div class="datafeed-pill">
+          <span class="pill-label">Timeframe:</span>
+          <span class="pill-val">3 Min</span>
+          <span class="badge" id="chartDbCountBadge">0 Candles</span>
+        </div>
+
+        <div class="clock-display">
+          <span class="clock-time" id="istClock">--:--:-- IST</span>
+          <span class="market-pill" id="marketPill">Checking...</span>
+        </div>
+      </div>
+
+      <div class="nav-right">
+        <button class="btn-outline btn-sm" id="resetZoomBtn">Reset Zoom</button>
+        <button class="btn-primary btn-sm" id="backfillBtn" title="Fetch last 3 days of 3-minute candles from active live broker REST API">
+          Load 3 Days History
+        </button>
+        <div class="conn-status" id="connStatus">
+          <span class="status-indicator online"></span>
+          <span class="status-label" id="connLabel">Connecting...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- LIVE CANDLE OHLC LEGEND STRIP -->
+    <section class="chart-ohlc-bar">
+      <div class="chart-ohlc-stats mono">
+        <span class="ohlc-symbol">NIFTY 50 (3m)</span>
+        <span>Time: <strong id="candleTimeDisplay">--</strong></span>
+        <span>O: <strong id="candleOpenDisplay">--</strong></span>
+        <span>H: <strong id="candleHighDisplay">--</strong></span>
+        <span>L: <strong id="candleLowDisplay">--</strong></span>
+        <span>C: <strong id="candleCloseDisplay">--</strong></span>
+        <span>Source: <strong id="candleSourceDisplay">--</strong></span>
+      </div>
+      <div class="chart-ohlc-hint" id="chartStatusText">
+        Loading 3-minute candles from local SQLite database...
+      </div>
+    </section>
+
+    <!-- CHART WORKSPACE -->
+    <main class="main-content chart-main">
+      <div class="chart-card">
+        <div id="chartContainer" class="chart-container"></div>
+        <div id="chartEmptyOverlay" class="chart-empty-overlay" style="display: none;">
+          <div>No NIFTY 3-minute candles in local database yet.</div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
+            Connect/log in an active broker (Angel One, Kotak Neo, or Dhan) to backfill the last 3 days via REST API and stream new 3-minute candles via WebSocket.
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+  <script src="chart.js"></script>
+</body>
+</html>

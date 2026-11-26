@@ -1,9 +1,12 @@
 const assert = require('assert');
+const fs = require('fs');
 const http = require('http');
 const { spawn } = require('child_process');
 const path = require('path');
 
 const { NiftyFeedManager, computeAtmStrike, computeOiBuildup } = require('../lib/niftyFeedManager');
+const { NiftyCandleManager, aggregateTo3MinuteCandles } = require('../lib/niftyCandleManager');
+const AutoLoginScheduler = require('../lib/autoLoginScheduler');
 const AngelOneBroker = require('../lib/brokers/angelOneBroker');
 const KotakNeoBroker = require('../lib/brokers/kotakNeoBroker');
 const DhanBroker = require('../lib/brokers/dhanBroker');
@@ -472,6 +475,113 @@ async function run() {
     global.fetch = origFetchD;
   }
 
+  // 2e. NiftyCandleManager: 3-minute SQLite persistence, WS candle aggregation, and 3-day REST backfill
+  const testDbPath = path.join(__dirname, '..', 'data', 'test_candles_tmp.db');
+  for (const suffix of ['', '-wal', '-shm']) {
+    if (fs.existsSync(testDbPath + suffix)) fs.unlinkSync(testDbPath + suffix);
+  }
+
+  // Verify 1m -> 3m aggregation (e.g. 09:15, 09:16, 09:17 -> 09:15)
+  const baseSec = Math.floor(Date.UTC(2026, 10, 25, 3, 45, 0) / 1000); // 09:15:00 IST
+  const agg = aggregateTo3MinuteCandles([
+    { time: baseSec, open: 24500, high: 24510, low: 24495, close: 24508, volume: 100 },
+    { time: baseSec + 60, open: 24508, high: 24520, low: 24505, close: 24515, volume: 150 },
+    { time: baseSec + 120, open: 24515, high: 24518, low: 24502, close: 24512, volume: 120 }
+  ]);
+  assert.strictEqual(agg.length, 1);
+  assert.strictEqual(agg[0].time, baseSec);
+  assert.strictEqual(agg[0].open, 24500);
+  assert.strictEqual(agg[0].high, 24520);
+  assert.strictEqual(agg[0].low, 24495);
+  assert.strictEqual(agg[0].close, 24512);
+  assert.strictEqual(agg[0].volume, 370);
+
+  let backfillCalls = 0;
+  const fakeHistMgr = {
+    getNiftyHistoricalCandles: async () => {
+      backfillCalls++;
+      return {
+        broker: 'angelone',
+        candles: [
+          { time: baseSec - 360, open: 24450, high: 24470, low: 24440, close: 24465, volume: 200, source: 'rest' },
+          { time: baseSec - 180, open: 24465, high: 24490, low: 24460, close: 24485, volume: 250, source: 'rest' }
+        ]
+      };
+    }
+  };
+
+  let candleMgr = new NiftyCandleManager(fakeHistMgr, { dbPath: testDbPath });
+  try {
+    const bf1 = await candleMgr.backfillIfEmpty(3);
+    assert.strictEqual(bf1.backfilled, true);
+    assert.strictEqual(bf1.count, 2);
+    assert.strictEqual(backfillCalls, 1);
+
+    // Calling backfillIfEmpty again must NOT hit broker REST since DB already has history
+    const bf2 = await candleMgr.backfillIfEmpty(3);
+    assert.strictEqual(bf2.backfilled, false);
+    assert.strictEqual(backfillCalls, 1);
+
+    // Live WebSocket ticks generate and update 3-minute candles
+    const c1 = candleMgr.onSpotTick(24500, baseSec * 1000 + 10000);
+    const c2 = candleMgr.onSpotTick(24525, baseSec * 1000 + 70000);
+    const c3 = candleMgr.onSpotTick(24492, baseSec * 1000 + 120000);
+    const cNext = candleMgr.onSpotTick(24530, (baseSec + 180) * 1000 + 5000);
+
+    assert.strictEqual(c1.time, baseSec);
+    assert.strictEqual(c3.open, 24500);
+    assert.strictEqual(c3.high, 24525);
+    assert.strictEqual(c3.low, 24492);
+    assert.strictEqual(c3.close, 24492);
+    assert.strictEqual(cNext.time, baseSec + 180);
+    candleMgr.close();
+
+    // Re-open SQLite DB to verify candles persisted on disk
+    candleMgr = new NiftyCandleManager(fakeHistMgr, { dbPath: testDbPath });
+    const loaded = candleMgr.getCandles();
+    assert.strictEqual(loaded.length, 4);
+    assert.strictEqual(loaded[2].high, 24525);
+    assert.strictEqual(loaded[3].open, 24530);
+    console.log('   ✅ NiftyCandleManager persists 3m candles in SQLite, aggregates WS ticks, and backfills 3d REST history when empty.');
+  } finally {
+    candleMgr.close();
+    for (const suffix of ['', '-wal', '-shm']) {
+      if (fs.existsSync(testDbPath + suffix)) fs.unlinkSync(testDbPath + suffix);
+    }
+  }
+
+  // 2f. AutoLoginScheduler: does NOT trigger at 08:58 IST, triggers once at 08:59 AM IST
+  let autoLoginCalls = 0;
+  const fakeAutoLoginMgr = {
+    loginAllBrokers: async () => {
+      autoLoginCalls++;
+      return [
+        { accountId: 'k1', broker: 'kotakneo', success: true },
+        { accountId: 'a1', broker: 'angelone', success: true },
+        { accountId: 'd1', broker: 'dhan', success: true }
+      ];
+    }
+  };
+  const autoLoginSched = new AutoLoginScheduler(fakeAutoLoginMgr, { disableTimers: true });
+
+  const at858 = makeISTDate(2026, 11, 26, 8, 58);
+  const res858 = await autoLoginSched._checkAndTrigger(at858);
+  assert.strictEqual(res858.triggered, false, 'Must NOT auto-login before 08:59 AM IST');
+  assert.strictEqual(autoLoginCalls, 0);
+
+  const at859 = makeISTDate(2026, 11, 26, 8, 59);
+  const res859 = await autoLoginSched._checkAndTrigger(at859);
+  assert.strictEqual(res859.triggered, true, 'Must auto-login all brokers at 08:59 AM IST');
+  assert.strictEqual(autoLoginCalls, 1);
+  assert.strictEqual(res859.results.length, 3);
+
+  // Repeat check same day must not re-login
+  const at902 = makeISTDate(2026, 11, 26, 9, 2);
+  const res902 = await autoLoginSched._checkAndTrigger(at902);
+  assert.strictEqual(res902.triggered, false);
+  assert.strictEqual(autoLoginCalls, 1);
+  console.log('   ✅ AutoLoginScheduler triggers loginAllBrokers once daily at 08:59 AM IST.');
+
   // 2b. KotakNeoClient baseUrl migration & login header checks
   const kotakLegacy = new KotakNeoClient({
     baseUrl: 'https://napi.kotaksecurities.com',
@@ -561,6 +671,77 @@ async function run() {
     assert.strictEqual(limitsRes.utilizedMargin, 24500);
     assert.strictEqual(limitsRes.collateralMargin, 50000);
 
+    // Verify getLimits recovers from "bridge API error out" on ALL/ALL/ALL by retrying / falling back to NSE segment
+    const kotakFast = new KotakNeoClient({
+      consumerKey: 'ck',
+      mobileNumber: '9999999999',
+      ucc: 'U1',
+      retryDelayMs: 0
+    });
+    kotakFast.isAuthenticated = true;
+    kotakFast.sessionToken = 'st';
+    kotakFast.sid = 'sid';
+    const seenPayloads = [];
+    global.fetch = async (_url, opts) => {
+      const parsedBody = new URLSearchParams(opts.body).get('jData');
+      seenPayloads.push(JSON.parse(parsedBody));
+      if (parsedBody.includes('"exch":"ALL"')) {
+        return {
+          ok: false,
+          status: 424,
+          statusText: 'Failed Dependency',
+          text: async () => JSON.stringify({ stCode: 300015, message: 'bridge API error out' })
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ Net: '90000', MarginUsed: '10000' })
+      };
+    };
+    const fallbackLimits = await kotakFast.getLimits();
+    assert.strictEqual(fallbackLimits.availableCash, 90000);
+    assert.strictEqual(fallbackLimits.utilizedMargin, 10000);
+    assert(seenPayloads.some(p => p.exch === 'NSE'), 'Expected getLimits to fall back to NSE segment after bridge error');
+
+    // Verify persistent bridge error marks err.isBridgeError and KotakNeoBroker cools down repeated getFunds calls
+    global.fetch = async () => ({
+      ok: false,
+      status: 424,
+      statusText: 'Failed Dependency',
+      text: async () => JSON.stringify({ message: 'bridge API error out' })
+    });
+    await assert.rejects(
+      () => kotakFast.getLimits(),
+      err => err.message === 'bridge API error out' && err.isBridgeError === true
+    );
+
+    const cooldownBroker = new KotakNeoBroker({
+      id: 'kotak-bridge-cooldown',
+      isMock: false,
+      bridgeErrorCooldownMs: 60000
+    });
+    let getLimitsAttempts = 0;
+    cooldownBroker.client.isAuthenticated = true;
+    cooldownBroker.client.getLimits = async () => {
+      getLimitsAttempts++;
+      const err = new Error('bridge API error out');
+      err.isBridgeError = true;
+      throw err;
+    };
+    const origWarn = console.warn;
+    console.warn = () => {};
+    try {
+      await cooldownBroker.getFunds();
+      await cooldownBroker.getFunds();
+      await cooldownBroker.getFunds();
+      assert.strictEqual(getLimitsAttempts, 1, 'Non-force getFunds should respect bridge error cooldown instead of spamming API');
+      await cooldownBroker.getFunds({ force: true });
+      assert.strictEqual(getLimitsAttempts, 2, 'Force getFunds should bypass cooldown');
+    } finally {
+      console.warn = origWarn;
+    }
+
     // Array / stat: Not_Ok error format
     global.fetch = async () => ({
       ok: true,
@@ -570,6 +751,60 @@ async function run() {
     await assert.rejects(
       () => kotakLegacy.validateMpin('000000', 'UCC1', 'vt'),
       err => err.message === 'Invalid MPIN'
+    );
+
+    // Verify JWT "Token used before issued" clock skew retries cleanly during login validation
+    const kotakJwt = new KotakNeoClient({
+      consumerKey: 'ck',
+      mobileNumber: '9999999999',
+      ucc: 'UCC1',
+      jwtSkewRetryDelayMs: 0
+    });
+    kotakJwt.sessionToken = 'stale-session-token';
+    kotakJwt.sid = 'stale-sid';
+    let totpReqHeaders = null;
+    global.fetch = async (_url, opts) => {
+      totpReqHeaders = opts.headers;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: { token: 'fresh-view-token', sid: 'fresh-sid' } })
+      };
+    };
+    await kotakJwt.loginWithTotp('9999999999', 'UCC1', '123456');
+    assert.strictEqual(totpReqHeaders['Auth'], undefined, 'loginWithTotp must not send stale session Auth header');
+    assert.strictEqual(totpReqHeaders['Sid'], undefined, 'loginWithTotp must not send stale session Sid header');
+
+    let mpinAttempts = 0;
+    global.fetch = async () => {
+      mpinAttempts++;
+      if (mpinAttempts < 3) {
+        return {
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+          text: async () => JSON.stringify({ message: 'error in parsing jwt Token used before issued' })
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: { token: 'final-session-token', sid: 'final-sid', baseUrl: 'https://e21.kotaksecurities.com' } })
+      };
+    };
+    const mpinOk = await kotakJwt.validateMpin('1234', 'UCC1', 'fresh-view-token');
+    assert.strictEqual(mpinOk.success, true);
+    assert.strictEqual(mpinAttempts, 3, 'validateMpin should retry transient JWT "Token used before issued" errors');
+
+    global.fetch = async () => ({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      text: async () => JSON.stringify({ message: 'error in parsing jwt Token used before issued' })
+    });
+    await assert.rejects(
+      () => kotakJwt.validateMpin('1234', 'UCC1', 'fresh-view-token'),
+      /sync system NTP/
     );
 
     global.fetch = async () => {
@@ -612,7 +847,8 @@ async function run() {
     assert.strictEqual(homeRes.status, 200);
     assert(homeRes.body.includes('topNiftyLtp'));
     assert(homeRes.body.includes('/option-chain'));
-    console.log('   ✅ GET / serves terminal with live top NIFTY ticker & Option Chain link.');
+    assert(homeRes.body.includes('/chart'));
+    console.log('   ✅ GET / serves terminal with live top NIFTY ticker, Option Chain, and Chart links.');
 
     const ocRes = await httpRequest(testPort, '/option-chain');
     assert.strictEqual(ocRes.status, 200);
@@ -620,6 +856,20 @@ async function run() {
     assert(ocRes.body.includes('<th>OI Built Up</th>'));
     assert(!ocRes.body.includes('<th>Side</th>'));
     console.log('   ✅ GET /option-chain serves live-only Option Chain page with OI Built Up column.');
+
+    const chartPageRes = await httpRequest(testPort, '/chart');
+    assert.strictEqual(chartPageRes.status, 200);
+    assert(chartPageRes.body.includes('chartContainer'));
+    assert(chartPageRes.body.includes('NIFTY 50 • 3 MINUTE CHART'));
+    console.log('   ✅ GET /chart serves live NIFTY 3-minute chart page.');
+
+    const chartApiRes = await httpRequest(testPort, '/api/nifty-chart');
+    assert.strictEqual(chartApiRes.status, 200);
+    const chartApiJson = JSON.parse(chartApiRes.body);
+    assert.strictEqual(chartApiJson.success, true);
+    assert.strictEqual(chartApiJson.timeframe, '3m');
+    assert(Array.isArray(chartApiJson.candles));
+    console.log(`   ✅ GET /api/nifty-chart returned 3m chart state (${chartApiJson.count} stored candles).`);
 
     const apiRes = await httpRequest(testPort, '/api/nifty-feed');
     assert.strictEqual(apiRes.status, 200);
