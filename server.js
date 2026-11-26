@@ -661,13 +661,17 @@ const server = http.createServer(async (req, res) => {
         if (niftyCandleManager.getCandleCount() === 0) {
           backfillInfo = await niftyCandleManager.backfillIfEmpty(days);
         }
+        const candles = niftyCandleManager.getCandles({ limit });
+        const candles1m = niftyCandleManager.getCandles({ limit: limit * 3, timeframe: '1m' });
         return sendJson(res, 200, {
           success: true,
           symbol: 'NIFTY',
           timeframe: '3m',
           count: niftyCandleManager.getCandleCount(),
           backfilled: Boolean(backfillInfo.backfilled),
-          candles: niftyCandleManager.getCandles({ limit }),
+          candles,
+          candles1m,
+          analysis: niftyCandleManager.getChartAnalysis({ limit }),
           currentCandle: niftyCandleManager.currentCandle,
           spot: niftyFeedManager.getSnapshot().spot
         });
@@ -680,7 +684,9 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, {
           success: true,
           ...result,
-          candles: niftyCandleManager.getCandles({ limit: 600 })
+          candles: niftyCandleManager.getCandles({ limit: 600 }),
+          candles1m: niftyCandleManager.getCandles({ limit: 1800, timeframe: '1m' }),
+          analysis: niftyCandleManager.getChartAnalysis({ limit: 600 })
         });
       }
 
