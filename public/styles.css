@@ -965,11 +965,93 @@ input:disabled { opacity: 0.4; cursor: not-allowed; }
   background: #0b1222;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  height: calc(100vh - 205px);
+  height: calc(100vh - 255px);
   min-height: 440px;
   overflow: hidden;
   box-shadow: var(--shadow);
 }
+
+.chart-tf-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.tf-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-btn.active {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.chart-overlay-toggles {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.overlay-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.overlay-toggle input {
+  accent-color: #38bdf8;
+  cursor: pointer;
+}
+
+.chart-levels-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(15, 23, 42, 0.92);
+  border-bottom: 1px solid var(--border-color);
+  padding: 6px 20px;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+.levels-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lvl-pill {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.lvl-pdh { color: #fbbf24; border-color: rgba(251, 191, 36, 0.35); }
+.lvl-pdl { color: #38bdf8; border-color: rgba(56, 189, 248, 0.35); }
+.lvl-pivot { color: #c084fc; border-color: rgba(192, 132, 252, 0.35); }
+.lvl-res { color: #fb7185; border-color: rgba(251, 113, 133, 0.3); }
+.lvl-sup { color: #34d399; border-color: rgba(52, 211, 153, 0.3); }
+.lvl-ha { color: #cbd5e1; border-color: rgba(148, 163, 184, 0.25); }
 
 .chart-container {
   width: 100%;

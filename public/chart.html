@@ -71,8 +71,13 @@
         </div>
 
         <div class="datafeed-pill">
-          <span class="pill-label">Timeframe:</span>
-          <span class="pill-val">3 Min</span>
+          <span class="pill-label">Chart:</span>
+          <div class="chart-tf-group" id="chartTfGroup">
+            <button type="button" class="tf-btn active" data-tf="3m">3m</button>
+            <button type="button" class="tf-btn" data-tf="5m_ha">5m HA</button>
+            <button type="button" class="tf-btn" data-tf="15m_ha">15m HA</button>
+            <button type="button" class="tf-btn" data-tf="1h_ha">1h HA</button>
+          </div>
           <span class="badge" id="chartDbCountBadge">0 Candles</span>
         </div>
 
@@ -97,13 +102,35 @@
     <!-- LIVE CANDLE OHLC LEGEND STRIP -->
     <section class="chart-ohlc-bar">
       <div class="chart-ohlc-stats mono">
-        <span class="ohlc-symbol">NIFTY 50 (3m)</span>
+        <span class="ohlc-symbol" id="chartActiveLabel">NIFTY 50 (3m)</span>
         <span>Time: <strong id="candleTimeDisplay">--</strong></span>
         <span>O: <strong id="candleOpenDisplay">--</strong></span>
         <span>H: <strong id="candleHighDisplay">--</strong></span>
         <span>L: <strong id="candleLowDisplay">--</strong></span>
         <span>C: <strong id="candleCloseDisplay">--</strong></span>
         <span>Source: <strong id="candleSourceDisplay">--</strong></span>
+      </div>
+      <div class="chart-overlay-toggles">
+        <label class="overlay-toggle"><input type="checkbox" id="toggleSessions" checked><span>Session Line</span></label>
+        <label class="overlay-toggle"><input type="checkbox" id="toggleHaSr" checked><span>HA S/R (5m/15m/1h)</span></label>
+        <label class="overlay-toggle"><input type="checkbox" id="togglePdhPdl" checked><span>PDH / PDL</span></label>
+        <label class="overlay-toggle"><input type="checkbox" id="togglePivots" checked><span>Pivot Points</span></label>
+      </div>
+    </section>
+
+    <!-- KEY LEVELS & HEIKIN-ASHI S/R SUMMARY BAR -->
+    <section class="chart-levels-bar mono" id="chartLevelsBar">
+      <div class="levels-group" id="pdhPdlSummary">
+        <span class="lvl-pill lvl-pdh">PDH: <strong id="lvlPdh">--</strong></span>
+        <span class="lvl-pill lvl-pdl">PDL: <strong id="lvlPdl">--</strong></span>
+        <span class="lvl-pill lvl-pivot">P: <strong id="lvlPivot">--</strong></span>
+        <span class="lvl-pill lvl-res">R1: <strong id="lvlR1">--</strong> | R2: <strong id="lvlR2">--</strong> | R3: <strong id="lvlR3">--</strong></span>
+        <span class="lvl-pill lvl-sup">S1: <strong id="lvlS1">--</strong> | S2: <strong id="lvlS2">--</strong> | S3: <strong id="lvlS3">--</strong></span>
+      </div>
+      <div class="levels-group" id="haSrSummary">
+        <span class="lvl-pill lvl-ha" id="haSummary5m">5m HA (&gt;2G Res / &gt;2R Sup): --</span>
+        <span class="lvl-pill lvl-ha" id="haSummary15m">15m HA: --</span>
+        <span class="lvl-pill lvl-ha" id="haSummary1h">1h HA: --</span>
       </div>
       <div class="chart-ohlc-hint" id="chartStatusText">
         Loading 3-minute candles from local SQLite database...

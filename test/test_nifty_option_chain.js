@@ -6,6 +6,14 @@ const path = require('path');
 
 const { NiftyFeedManager, computeAtmStrike, computeOiBuildup } = require('../lib/niftyFeedManager');
 const { NiftyCandleManager, aggregateTo3MinuteCandles } = require('../lib/niftyCandleManager');
+const {
+  getSessionBoundaries,
+  aggregateToSessionTimeframe,
+  calculateHeikinAshi,
+  detectHeikinAshiZones,
+  calculatePreviousDayAndPivots,
+  buildChartAnalysis
+} = require('../lib/niftyChartAnalysis');
 const AutoLoginScheduler = require('../lib/autoLoginScheduler');
 const AngelOneBroker = require('../lib/brokers/angelOneBroker');
 const KotakNeoBroker = require('../lib/brokers/kotakNeoBroker');
@@ -778,9 +786,91 @@ async function run() {
   // Repeat check same day must not re-login
   const at902 = makeISTDate(2026, 11, 26, 9, 2);
   const res902 = await autoLoginSched._checkAndTrigger(at902);
-  assert.strictEqual(res902.triggered, false);
+  assert.strictEqual(at902 ? res902.triggered : false, false);
   assert.strictEqual(autoLoginCalls, 1);
   console.log('   ✅ AutoLoginScheduler triggers loginAllBrokers once daily at 08:59 AM IST.');
+
+  // 2g. Chart Analysis: Session Boundaries, 5m/15m/1h Heikin-Ashi (>2G Res / >2R Sup), PDH/PDL, Pivots
+  const d1Start = Math.floor(makeISTDate(2026, 11, 25, 9, 15).getTime() / 1000);
+  const d2Start = Math.floor(makeISTDate(2026, 11, 26, 9, 15).getTime() / 1000);
+
+  // Build Day 1 (prev day) 1m candles over 2 hours (9:15..11:15) with known PDH=25200, PDL=24900, PDC=25100
+  const multiDay1m = [];
+  for (let m = 0; m < 120; m++) {
+    const t = d1Start + m * 60;
+    const base = 25000 + m;
+    multiDay1m.push({
+      time: t,
+      open: base,
+      high: m === 50 ? 25200 : base + 10,
+      low: m === 10 ? 24900 : base - 10,
+      close: m === 119 ? 25100 : base + 2,
+      volume: 100
+    });
+  }
+  // Build Day 2 (today) 1m candles: first 10 mins steady, then rally (4 green HA 5m bars), then drop (3 red HA 5m bars)
+  const d2Prices = [
+    25100, 25120, 25140, 25160, 25180, // 09:15..09:19 -> 5m #1 bullish
+    25180, 25200, 25230, 25250, 25270, // 09:20..09:24 -> 5m #2 bullish
+    25270, 25300, 25330, 25360, 25400, // 09:25..09:29 -> 5m #3 bullish (peak 25400)
+    25400, 25360, 25300, 25240, 25190, // 09:30..09:34 -> 5m #4 bearish
+    25190, 25150, 25110, 25070, 25040, // 09:35..09:39 -> 5m #5 bearish
+    25040, 25010, 24980, 24960, 24950, // 09:40..09:44 -> 5m #6 bearish
+    24950, 24920, 24890, 24870, 24850  // 09:45..09:49 -> 5m #7 bearish (trough 24850)
+  ];
+  for (let m = 0; m < d2Prices.length; m++) {
+    const p = d2Prices[m];
+    const prevP = m > 0 ? d2Prices[m - 1] : 25090;
+    multiDay1m.push({
+      time: d2Start + m * 60,
+      open: prevP,
+      high: Math.max(prevP, p),
+      low: Math.min(prevP, p),
+      close: p,
+      volume: 50
+    });
+  }
+
+  const sessions = getSessionBoundaries(multiDay1m);
+  assert.strictEqual(sessions.length, 1, 'Expected 1 session boundary between Day 1 and Day 2');
+  assert.strictEqual(sessions[0].time, d2Start, 'Session boundary must align cleanly with 09:15 IST open');
+
+  const pivots = calculatePreviousDayAndPivots(multiDay1m);
+  assert.strictEqual(pivots.pdh, 25200);
+  assert.strictEqual(pivots.pdl, 24900);
+  assert.strictEqual(pivots.pdc, 25100);
+  assert.strictEqual(pivots.pivot, 25066.67); // (25200 + 24900 + 25100) / 3
+  assert.strictEqual(pivots.r1, 25233.33);
+  assert.strictEqual(pivots.s1, 24933.33);
+
+  // Verify >2 green & >2 red rule explicitly on synthetic HA sequence
+  const syntheticHa = [
+    { time: 100, open: 100, high: 110, low: 98, close: 108, color: 'green' },
+    { time: 200, open: 104, high: 115, low: 103, close: 114, color: 'green' }, // only 2 green -> should NOT mark resistance
+    { time: 300, open: 114, high: 115, low: 105, close: 106, color: 'red' },
+    { time: 400, open: 110, high: 111, low: 101, close: 102, color: 'red' },
+    { time: 500, open: 106, high: 107, low: 95, close: 97, color: 'red' },   // 3 red -> Support @ 95
+    { time: 600, open: 97, high: 105, low: 96, close: 104, color: 'green' },
+    { time: 700, open: 100, high: 112, low: 100, close: 111, color: 'green' },
+    { time: 800, open: 105, high: 125, low: 105, close: 122, color: 'green' },
+    { time: 900, open: 113, high: 120, low: 112, close: 119, color: 'green' } // 4 green -> Resistance @ 125
+  ];
+  const syntheticZones = detectHeikinAshiZones(syntheticHa, '5m');
+  assert.strictEqual(syntheticZones.resistances.length, 1, 'Only >2 green streak should mark resistance');
+  assert.strictEqual(syntheticZones.resistances[0].price, 125);
+  assert.strictEqual(syntheticZones.resistances[0].count, 4);
+  assert.strictEqual(syntheticZones.supports.length, 1, 'Only >2 red streak should mark support');
+  assert.strictEqual(syntheticZones.supports[0].price, 95);
+  assert.strictEqual(syntheticZones.supports[0].count, 3);
+
+  const agg5m = aggregateToSessionTimeframe(multiDay1m, 5);
+  const agg15m = aggregateToSessionTimeframe(multiDay1m, 15);
+  const agg1h = aggregateToSessionTimeframe(multiDay1m, 60);
+  assert(agg5m.length > agg15m.length && agg15m.length > agg1h.length);
+  const fullAnalysis = buildChartAnalysis(aggregateTo3MinuteCandles(multiDay1m), multiDay1m);
+  assert(fullAnalysis.timeframes['5m'] && fullAnalysis.timeframes['15m'] && fullAnalysis.timeframes['1h']);
+  assert(fullAnalysis.timeframes['5m'].latestResistance && fullAnalysis.timeframes['5m'].latestSupport, '5m HA should detect both >2G resistance and >2R support');
+  console.log('   ✅ Chart analysis computes session vertical lines, PDH/PDL, Pivot Points, and 5m/15m/1h Heikin-Ashi S/R zones.');
 
   // 2b. KotakNeoClient baseUrl migration & login header checks
   const kotakLegacy = new KotakNeoClient({
@@ -1060,8 +1150,14 @@ async function run() {
     const chartPageRes = await httpRequest(testPort, '/chart');
     assert.strictEqual(chartPageRes.status, 200);
     assert(chartPageRes.body.includes('chartContainer'));
-    assert(chartPageRes.body.includes('NIFTY 50 • 3 MINUTE CHART'));
-    console.log('   ✅ GET /chart serves live NIFTY 3-minute chart page.');
+    assert(chartPageRes.body.includes('toggleSessions'));
+    assert(chartPageRes.body.includes('toggleHaSr'));
+    assert(chartPageRes.body.includes('togglePdhPdl'));
+    assert(chartPageRes.body.includes('togglePivots'));
+    assert(chartPageRes.body.includes('data-tf="5m_ha"'));
+    assert(chartPageRes.body.includes('data-tf="15m_ha"'));
+    assert(chartPageRes.body.includes('data-tf="1h_ha"'));
+    console.log('   ✅ GET /chart serves live NIFTY chart page with Session Line, 5m/15m/1h HA S/R, Pivots, and PDH/PDL.');
 
     const chartApiRes = await httpRequest(testPort, '/api/nifty-chart');
     assert.strictEqual(chartApiRes.status, 200);
@@ -1069,6 +1165,7 @@ async function run() {
     assert.strictEqual(chartApiJson.success, true);
     assert.strictEqual(chartApiJson.timeframe, '3m');
     assert(Array.isArray(chartApiJson.candles));
+    assert(chartApiJson.analysis && chartApiJson.analysis.timeframes && chartApiJson.analysis.timeframes['5m'], 'Expected analysis payload with 5m/15m/1h HA');
     console.log(`   ✅ GET /api/nifty-chart returned 3m chart state (${chartApiJson.count} stored candles).`);
 
     const apiRes = await httpRequest(testPort, '/api/nifty-feed');
@@ -1111,10 +1208,12 @@ async function run() {
     assert(sse.raw.includes('event: nifty_tick'));
     console.log('   ✅ GET /api/stream broadcasts live nifty_tick updates over SSE.');
   } finally {
-    serverProc.kill();
+    http.globalAgent.destroy();
+    serverProc.kill('SIGKILL');
   }
 
   console.log('\n🎉 ALL LIVE-ONLY NIFTY FEED & OPTION CHAIN TESTS PASSED!\n');
+  process.exit(0);
 }
 
 run().catch(err => {

@@ -738,7 +738,7 @@ const PORT = process.env.PORT || currentConfig.port || 3000;
 server.listen(PORT, () => {
   console.log(`=====================================================`);
   console.log(`  Multi-Broker Algo Auto-Exit Terminal Running!`);
-  console.log(`  Brokers Supported: Kotak Neo, Angel One, Dhan`);
+  console.log(`  Brokers Supported: Kotak Neo, Angel One, Dhan, Sahi`);
   console.log(`  9:00 AM Balance Scheduler: ACTIVE`);
   console.log(`  Charges & Net Profit % Engine: ACTIVE`);
   console.log(`  NIFTY 3m SQLite Chart Store: ${niftyCandleManager.getCandleCount()} candles`);

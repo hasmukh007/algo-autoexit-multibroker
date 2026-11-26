@@ -1,17 +1,34 @@
 /**
- * NIFTY 50 3-Minute Live Chart Controller
- * - Loads stored candles from local SQLite (/api/nifty-chart, auto-backfilling 3 days if empty)
- * - Streams real-time WebSocket 3-minute candle updates via SSE (nifty_candle)
- * - Renders via TradingView Lightweight Charts (with built-in Canvas 2D OHLC fallback)
+ * NIFTY 50 Live Chart Controller
+ * - Supports 3m standard candles plus 5m, 15m, and 1h Heikin-Ashi views
+ * - Draws IST session-change vertical boundary lines
+ * - Computes Heikin-Ashi across 5m, 15m, and 1h:
+ *     >2 consecutive green HA candles -> marks High as Resistance
+ *     >2 consecutive red HA candles   -> marks Low as Support
+ * - Draws Previous Day High/Low (PDH / PDL) and Floor Pivot Points (P, R1-R3, S1-S3)
  */
+
+const IST_OFFSET_SEC = 19800;
+const NSE_SESSION_START_SEC = 9 * 3600 + 15 * 60;
 
 const chartState = {
   candles: [],
+  candles1m: [],
+  activeTf: '3m', // '3m' | '5m_ha' | '15m_ha' | '1h_ha'
+  analysis: null,
   previousNiftyLtp: null,
   lwChart: null,
   candleSeries: null,
+  sessionPrimitive: null,
+  priceLines: [],
   fallbackCanvas: null,
-  hoverIndex: null
+  hoverIndex: null,
+  overlays: {
+    sessions: true,
+    haSr: true,
+    pdhPdl: true,
+    pivots: true
+  }
 };
 
 const C_DOM = {
@@ -27,10 +44,30 @@ const C_DOM = {
   istClock: document.getElementById('istClock'),
   marketPill: document.getElementById('marketPill'),
   chartDbCountBadge: document.getElementById('chartDbCountBadge'),
+  chartTfGroup: document.getElementById('chartTfGroup'),
+  chartActiveLabel: document.getElementById('chartActiveLabel'),
   resetZoomBtn: document.getElementById('resetZoomBtn'),
   backfillBtn: document.getElementById('backfillBtn'),
   connStatus: document.getElementById('connStatus'),
   connLabel: document.getElementById('connLabel'),
+
+  toggleSessions: document.getElementById('toggleSessions'),
+  toggleHaSr: document.getElementById('toggleHaSr'),
+  togglePdhPdl: document.getElementById('togglePdhPdl'),
+  togglePivots: document.getElementById('togglePivots'),
+
+  lvlPdh: document.getElementById('lvlPdh'),
+  lvlPdl: document.getElementById('lvlPdl'),
+  lvlPivot: document.getElementById('lvlPivot'),
+  lvlR1: document.getElementById('lvlR1'),
+  lvlR2: document.getElementById('lvlR2'),
+  lvlR3: document.getElementById('lvlR3'),
+  lvlS1: document.getElementById('lvlS1'),
+  lvlS2: document.getElementById('lvlS2'),
+  lvlS3: document.getElementById('lvlS3'),
+  haSummary5m: document.getElementById('haSummary5m'),
+  haSummary15m: document.getElementById('haSummary15m'),
+  haSummary1h: document.getElementById('haSummary1h'),
 
   candleTimeDisplay: document.getElementById('candleTimeDisplay'),
   candleOpenDisplay: document.getElementById('candleOpenDisplay'),
@@ -44,6 +81,333 @@ const C_DOM = {
   toastContainer: document.getElementById('toastContainer')
 };
 
+/* ============================================================
+   CLIENT-SIDE CHART ANALYSIS (Session Lines, 5m/15m/1h HA S/R, Pivots, PDH/PDL)
+   ============================================================ */
+
+function round2(n) {
+  return Number(Number(n).toFixed(2));
+}
+
+function getISTDateKey(epochSec) {
+  const shiftedMs = (Math.floor(Number(epochSec)) + IST_OFFSET_SEC) * 1000;
+  return new Date(shiftedMs).toISOString().slice(0, 10);
+}
+
+function formatISTSessionLabel(epochSec) {
+  const shiftedMs = (Math.floor(Number(epochSec)) + IST_OFFSET_SEC) * 1000;
+  const d = new Date(shiftedMs);
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${dd} ${months[d.getUTCMonth()]}`;
+}
+
+function getSessionBoundaries(candles = []) {
+  if (!Array.isArray(candles) || candles.length === 0) return [];
+  const out = [];
+  let prev = getISTDateKey(candles[0].time);
+  for (let i = 1; i < candles.length; i++) {
+    const dk = getISTDateKey(candles[i].time);
+    if (dk !== prev) {
+      out.push({ time: Number(candles[i].time), date: dk, label: formatISTSessionLabel(candles[i].time) });
+      prev = dk;
+    }
+  }
+  return out;
+}
+
+function aggregateToSessionTimeframe(candles = [], minutes = 5) {
+  const intervalSec = Number(minutes) * 60;
+  if (!Array.isArray(candles) || candles.length === 0 || !(intervalSec > 0)) return [];
+  const sorted = [...candles].sort((a, b) => Number(a.time) - Number(b.time));
+  const buckets = new Map();
+
+  for (const c of sorted) {
+    const t = Math.floor(Number(c.time));
+    const open = Number(c.open);
+    const high = Number(c.high);
+    const low = Number(c.low);
+    const close = Number(c.close);
+    const volume = Number(c.volume || 0);
+    if (!Number.isFinite(t) || !Number.isFinite(open) || !Number.isFinite(close) || close <= 0) continue;
+
+    const istSec = t + IST_OFFSET_SEC;
+    const istDayStart = Math.floor(istSec / 86400) * 86400;
+    const sessionAnchor = istDayStart + NSE_SESSION_START_SEC;
+    const bucketIdx = Math.floor((istSec - sessionAnchor) / intervalSec);
+    const bucketTime = (sessionAnchor + bucketIdx * intervalSec) - IST_OFFSET_SEC;
+
+    const ex = buckets.get(bucketTime);
+    if (!ex) {
+      buckets.set(bucketTime, {
+        time: bucketTime,
+        open: round2(open),
+        high: round2(Number.isFinite(high) ? high : open),
+        low: round2(Number.isFinite(low) ? low : open),
+        close: round2(close),
+        volume,
+        source: c.source || 'agg'
+      });
+    } else {
+      ex.high = round2(Math.max(ex.high, Number.isFinite(high) ? high : close));
+      ex.low = round2(Math.min(ex.low, Number.isFinite(low) ? low : close));
+      ex.close = round2(close);
+      ex.volume += volume;
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
+}
+
+function calculateHeikinAshi(candles = []) {
+  if (!Array.isArray(candles) || candles.length === 0) return [];
+  const sorted = [...candles].sort((a, b) => Number(a.time) - Number(b.time));
+  const ha = [];
+  let prevOpen = null;
+  let prevClose = null;
+
+  for (let i = 0; i < sorted.length; i++) {
+    const c = sorted[i];
+    const o = Number(c.open);
+    const h = Number(c.high);
+    const l = Number(c.low);
+    const cl = Number(c.close);
+    const haClose = (o + h + l + cl) / 4;
+    const haOpen = i === 0 ? (o + cl) / 2 : (prevOpen + prevClose) / 2;
+    const haHigh = Math.max(h, haOpen, haClose);
+    const haLow = Math.min(l, haOpen, haClose);
+
+    ha.push({
+      time: Number(c.time),
+      open: round2(haOpen),
+      high: round2(haHigh),
+      low: round2(haLow),
+      close: round2(haClose),
+      volume: Number(c.volume || 0),
+      color: haClose >= haOpen ? 'green' : 'red',
+      source: c.source || 'ha'
+    });
+    prevOpen = haOpen;
+    prevClose = haClose;
+  }
+  return ha;
+}
+
+function detectHeikinAshiZones(haCandles = [], timeframe = '5m') {
+  const resistances = [];
+  const supports = [];
+  if (!Array.isArray(haCandles) || haCandles.length === 0) {
+    return { timeframe, candleCount: 0, resistances, supports, latestResistance: null, latestSupport: null, currentStreak: { color: null, count: 0 } };
+  }
+
+  let runStart = 0;
+  for (let i = 1; i <= haCandles.length; i++) {
+    const isEnd = i === haCandles.length || haCandles[i].color !== haCandles[runStart].color;
+    if (!isEnd) continue;
+
+    const run = haCandles.slice(runStart, i);
+    const color = run[0].color;
+    if (run.length > 2) {
+      if (color === 'green') {
+        let peak = run[0];
+        let maxH = Number(peak.high);
+        for (const bar of run) {
+          if (Number(bar.high) >= maxH) {
+            maxH = Number(bar.high);
+            peak = bar;
+          }
+        }
+        resistances.push({ timeframe, type: 'resistance', price: round2(maxH), count: run.length, startTime: run[0].time, endTime: run[run.length - 1].time, markerTime: peak.time });
+      } else {
+        let trough = run[0];
+        let minL = Number(trough.low);
+        for (const bar of run) {
+          if (Number(bar.low) <= minL) {
+            minL = Number(bar.low);
+            trough = bar;
+          }
+        }
+        supports.push({ timeframe, type: 'support', price: round2(minL), count: run.length, startTime: run[0].time, endTime: run[run.length - 1].time, markerTime: trough.time });
+      }
+    }
+    runStart = i;
+  }
+
+  const lastColor = haCandles[haCandles.length - 1].color;
+  let streakCount = 0;
+  for (let i = haCandles.length - 1; i >= 0 && haCandles[i].color === lastColor; i--) {
+    streakCount++;
+  }
+
+  return {
+    timeframe,
+    candleCount: haCandles.length,
+    resistances,
+    supports,
+    latestResistance: resistances.length > 0 ? resistances[resistances.length - 1] : null,
+    latestSupport: supports.length > 0 ? supports[supports.length - 1] : null,
+    currentStreak: { color: lastColor, count: streakCount }
+  };
+}
+
+function calculatePreviousDayAndPivots(candles = []) {
+  if (!Array.isArray(candles) || candles.length === 0) return null;
+  const byDate = new Map();
+  const sorted = [...candles].sort((a, b) => Number(a.time) - Number(b.time));
+  for (const c of sorted) {
+    const dk = getISTDateKey(c.time);
+    if (!byDate.has(dk)) byDate.set(dk, []);
+    byDate.get(dk).push(c);
+  }
+  const dates = Array.from(byDate.keys()).sort();
+  if (dates.length < 2) return null;
+  const prevCandles = byDate.get(dates[dates.length - 2]);
+  if (!prevCandles || prevCandles.length === 0) return null;
+
+  let pdh = -Infinity;
+  let pdl = Infinity;
+  for (const c of prevCandles) {
+    if (Number(c.high) > pdh) pdh = Number(c.high);
+    if (Number(c.low) < pdl) pdl = Number(c.low);
+  }
+  const pdc = Number(prevCandles[prevCandles.length - 1].close);
+  const p = (pdh + pdl + pdc) / 3;
+  const range = pdh - pdl;
+
+  return {
+    prevDate: dates[dates.length - 2],
+    currentDate: dates[dates.length - 1],
+    pdh: round2(pdh),
+    pdl: round2(pdl),
+    pdc: round2(pdc),
+    pivot: round2(p),
+    r1: round2(2 * p - pdl),
+    s1: round2(2 * p - pdh),
+    r2: round2(p + range),
+    s2: round2(p - range),
+    r3: round2(pdh + 2 * (p - pdl)),
+    s3: round2(pdl - 2 * (pdh - p))
+  };
+}
+
+function computeClientAnalysis() {
+  const sorted3m = [...chartState.candles].sort((a, b) => Number(a.time) - Number(b.time));
+  const dates1m = new Set(chartState.candles1m.map(c => getISTDateKey(c.time)));
+  const fineSource = [
+    ...chartState.candles1m,
+    ...sorted3m.filter(c => !dates1m.has(getISTDateKey(c.time)))
+  ].sort((a, b) => Number(a.time) - Number(b.time));
+
+  const timeframes = {};
+  for (const [key, min] of [['5m', 5], ['15m', 15], ['1h', 60]]) {
+    const haCandles = calculateHeikinAshi(aggregateToSessionTimeframe(fineSource, min));
+    const zones = detectHeikinAshiZones(haCandles, key);
+    timeframes[key] = { ...zones, haCandles };
+  }
+
+  chartState.analysis = {
+    sessions: getSessionBoundaries(getDisplayedCandles(false)),
+    pivots: calculatePreviousDayAndPivots(fineSource.length > 0 ? fineSource : sorted3m),
+    timeframes
+  };
+  return chartState.analysis;
+}
+
+function getDisplayedCandles(withSessionRecalc = true) {
+  if (chartState.activeTf === '3m') {
+    return chartState.candles;
+  }
+  if (!chartState.analysis && withSessionRecalc) {
+    computeClientAnalysis();
+  }
+  const key = chartState.activeTf.replace('_ha', '');
+  const tfData = chartState.analysis && chartState.analysis.timeframes && chartState.analysis.timeframes[key];
+  return (tfData && tfData.haCandles) ? tfData.haCandles : chartState.candles;
+}
+
+/* ============================================================
+   LIGHTWEIGHT CHARTS SESSION VERTICAL LINE PRIMITIVE
+   ============================================================ */
+
+class SessionLinesPrimitive {
+  constructor() {
+    this._chart = null;
+    this._requestUpdate = null;
+    this._boundaries = [];
+    this._enabled = true;
+    this._coords = [];
+  }
+
+  attached({ chart, requestUpdate }) {
+    this._chart = chart;
+    this._requestUpdate = requestUpdate;
+  }
+
+  detached() {
+    this._chart = null;
+    this._requestUpdate = null;
+  }
+
+  setData(boundaries, enabled) {
+    this._boundaries = Array.isArray(boundaries) ? boundaries : [];
+    this._enabled = Boolean(enabled);
+    if (this._requestUpdate) this._requestUpdate();
+  }
+
+  updateAllViews() {
+    if (!this._chart || !this._enabled) {
+      this._coords = [];
+      return;
+    }
+    const ts = this._chart.timeScale();
+    this._coords = this._boundaries
+      .map(b => ({ x: ts.timeToCoordinate(b.time), label: b.label }))
+      .filter(item => item.x !== null && item.x !== undefined && Number.isFinite(item.x));
+  }
+
+  paneViews() {
+    const self = this;
+    return [{
+      zOrder() { return 'bottom'; },
+      renderer() {
+        return {
+          draw(target) {
+            if (!self._enabled || self._coords.length === 0) return;
+            target.useMediaCoordinateSpace(scope => {
+              const ctx = scope.context;
+              const h = scope.mediaSize.height;
+              ctx.save();
+              ctx.strokeStyle = 'rgba(245, 158, 11, 0.55)';
+              ctx.lineWidth = 1;
+              ctx.setLineDash([5, 4]);
+              ctx.font = '10px JetBrains Mono, monospace';
+
+              for (const item of self._coords) {
+                const x = Math.round(item.x) + 0.5;
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, h);
+                ctx.stroke();
+
+                const text = `Session ${item.label}`;
+                const tw = ctx.measureText(text).width + 8;
+                ctx.fillStyle = 'rgba(245, 158, 11, 0.16)';
+                ctx.fillRect(x + 3, 6, tw, 16);
+                ctx.fillStyle = '#fbbf24';
+                ctx.fillText(text, x + 7, 17);
+              }
+              ctx.restore();
+            });
+          }
+        };
+      }
+    }];
+  }
+}
+
+/* ============================================================
+   UI HELPERS & TOP BAR
+   ============================================================ */
+
 function showToast(message, type = 'info') {
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
@@ -56,7 +420,7 @@ function showToast(message, type = 'info') {
 }
 
 function formatISTTime(epochSec, includeDate = true) {
-  const d = new Date((Number(epochSec) + 19800) * 1000);
+  const d = new Date((Number(epochSec) + IST_OFFSET_SEC) * 1000);
   const hh = String(d.getUTCHours()).padStart(2, '0');
   const mm = String(d.getUTCMinutes()).padStart(2, '0');
   if (!includeDate) return `${hh}:${mm}`;
@@ -98,10 +462,7 @@ function updateTopNiftyBar(snapshot) {
 
   if (hasSpot) {
     const ltp = Number(spot.ltp);
-    C_DOM.topNiftyLtp.textContent = ltp.toLocaleString('en-IN', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    });
+    C_DOM.topNiftyLtp.textContent = ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     if (prev !== null && ltp !== prev) {
       C_DOM.topNiftyLtp.classList.remove('flash-up', 'flash-down');
       void C_DOM.topNiftyLtp.offsetWidth;
@@ -130,8 +491,8 @@ function updateTopNiftyBar(snapshot) {
   if (fs.isRunning) {
     C_DOM.topNiftyFeedPill.className = isLive ? 'nifty-feed-pill active' : 'nifty-feed-pill waiting';
     C_DOM.topNiftyFeedStatus.textContent = isLive
-      ? `9:00 AM Live Feed • WebSocket Streaming`
-      : `9:00 AM Feed • Awaiting Live Broker Quote`;
+      ? '9:00 AM Live Feed • WebSocket Streaming'
+      : '9:00 AM Feed • Awaiting Live Broker Quote';
   } else {
     C_DOM.topNiftyFeedPill.className = 'nifty-feed-pill waiting';
     C_DOM.topNiftyFeedStatus.textContent = `Live Option Feed Scheduled for ${fs.scheduledTimeIST || '09:00 IST'}`;
@@ -139,6 +500,9 @@ function updateTopNiftyBar(snapshot) {
 }
 
 function updateOhlcStrip(candle) {
+  const tfLabels = { '3m': '3m', '5m_ha': '5m Heikin-Ashi', '15m_ha': '15m Heikin-Ashi', '1h_ha': '1h Heikin-Ashi' };
+  C_DOM.chartActiveLabel.textContent = `NIFTY 50 (${tfLabels[chartState.activeTf] || '3m'})`;
+
   if (!candle) {
     C_DOM.candleTimeDisplay.textContent = '--';
     C_DOM.candleOpenDisplay.textContent = '--';
@@ -155,16 +519,167 @@ function updateOhlcStrip(candle) {
   C_DOM.candleLowDisplay.textContent = Number(candle.low).toFixed(2);
   C_DOM.candleCloseDisplay.textContent = Number(candle.close).toFixed(2);
   C_DOM.candleCloseDisplay.className = isUp ? 'profit-text' : 'loss-text';
-  C_DOM.candleSourceDisplay.textContent = candle.source === 'ws' ? 'WebSocket (Live)' : 'Broker REST (3D History)';
+  C_DOM.candleSourceDisplay.textContent = chartState.activeTf === '3m'
+    ? (candle.source === 'ws' ? 'WebSocket (Live)' : 'Broker REST (3D History)')
+    : `${tfLabels[chartState.activeTf]} (Calculated)`;
 }
+
+function updateLevelsSummaryBar() {
+  const a = chartState.analysis;
+  const p = a && a.pivots;
+  C_DOM.lvlPdh.textContent = p ? p.pdh.toFixed(2) : '--';
+  C_DOM.lvlPdl.textContent = p ? p.pdl.toFixed(2) : '--';
+  C_DOM.lvlPivot.textContent = p ? p.pivot.toFixed(2) : '--';
+  C_DOM.lvlR1.textContent = p ? p.r1.toFixed(2) : '--';
+  C_DOM.lvlR2.textContent = p ? p.r2.toFixed(2) : '--';
+  C_DOM.lvlR3.textContent = p ? p.r3.toFixed(2) : '--';
+  C_DOM.lvlS1.textContent = p ? p.s1.toFixed(2) : '--';
+  C_DOM.lvlS2.textContent = p ? p.s2.toFixed(2) : '--';
+  C_DOM.lvlS3.textContent = p ? p.s3.toFixed(2) : '--';
+
+  const fmtHa = (label, tfKey) => {
+    const z = a && a.timeframes && a.timeframes[tfKey];
+    if (!z || z.candleCount === 0) return `${label}: --`;
+    const resStr = z.latestResistance ? `Res ${z.latestResistance.price.toFixed(2)} (${z.latestResistance.count}G)` : 'Res --';
+    const supStr = z.latestSupport ? `Sup ${z.latestSupport.price.toFixed(2)} (${z.latestSupport.count}R)` : 'Sup --';
+    return `${label}: ${resStr} | ${supStr}`;
+  };
+  C_DOM.haSummary5m.textContent = fmtHa('5m HA', '5m');
+  C_DOM.haSummary15m.textContent = fmtHa('15m HA', '15m');
+  C_DOM.haSummary1h.textContent = fmtHa('1h HA', '1h');
+}
+
+/* ============================================================
+   OVERLAY PRICE LINES & SESSION MARKERS
+   ============================================================ */
+
+function buildAllPriceLineSpecs() {
+  const a = chartState.analysis;
+  if (!a) return [];
+  const lines = [];
+
+  if (chartState.overlays.pdhPdl && a.pivots) {
+    lines.push({ price: a.pivots.pdh, color: '#fbbf24', lineWidth: 2, lineStyle: 0, title: `PDH (${a.pivots.pdh.toFixed(2)})` });
+    lines.push({ price: a.pivots.pdl, color: '#38bdf8', lineWidth: 2, lineStyle: 0, title: `PDL (${a.pivots.pdl.toFixed(2)})` });
+  }
+
+  if (chartState.overlays.pivots && a.pivots) {
+    const p = a.pivots;
+    lines.push({ price: p.pivot, color: '#c084fc', lineWidth: 1, lineStyle: 2, title: 'Pivot P' });
+    lines.push({ price: p.r1, color: '#fb7185', lineWidth: 1, lineStyle: 3, title: 'R1' });
+    lines.push({ price: p.r2, color: '#f43f5e', lineWidth: 1, lineStyle: 3, title: 'R2' });
+    lines.push({ price: p.r3, color: '#e11d48', lineWidth: 1, lineStyle: 3, title: 'R3' });
+    lines.push({ price: p.s1, color: '#34d399', lineWidth: 1, lineStyle: 3, title: 'S1' });
+    lines.push({ price: p.s2, color: '#10b981', lineWidth: 1, lineStyle: 3, title: 'S2' });
+    lines.push({ price: p.s3, color: '#059669', lineWidth: 1, lineStyle: 3, title: 'S3' });
+  }
+
+  if (chartState.overlays.haSr && a.timeframes) {
+    const styles = {
+      '5m': { resColor: '#f87171', supColor: '#4ade80', width: 1, style: 2 },
+      '15m': { resColor: '#fb923c', supColor: '#2dd4bf', width: 2, style: 2 },
+      '1h': { resColor: '#ef4444', supColor: '#10b981', width: 2, style: 0 }
+    };
+    for (const tfKey of ['5m', '15m', '1h']) {
+      const z = a.timeframes[tfKey];
+      const st = styles[tfKey];
+      if (!z) continue;
+      if (z.latestResistance) {
+        lines.push({
+          price: z.latestResistance.price,
+          color: st.resColor,
+          lineWidth: st.width,
+          lineStyle: st.style,
+          title: `${tfKey} HA Res (${z.latestResistance.count}G)`
+        });
+      }
+      if (z.latestSupport) {
+        lines.push({
+          price: z.latestSupport.price,
+          color: st.supColor,
+          lineWidth: st.width,
+          lineStyle: st.style,
+          title: `${tfKey} HA Sup (${z.latestSupport.count}R)`
+        });
+      }
+    }
+  }
+
+  return lines;
+}
+
+function applyOverlays() {
+  computeClientAnalysis();
+  updateLevelsSummaryBar();
+
+  const displayed = getDisplayedCandles(false);
+  const boundaries = getSessionBoundaries(displayed);
+
+  if (chartState.candleSeries) {
+    for (const pl of chartState.priceLines) {
+      try { chartState.candleSeries.removePriceLine(pl); } catch (e) {}
+    }
+    chartState.priceLines = [];
+
+    for (const spec of buildAllPriceLineSpecs()) {
+      try {
+        const pl = chartState.candleSeries.createPriceLine({
+          price: spec.price,
+          color: spec.color,
+          lineWidth: spec.lineWidth,
+          lineStyle: spec.lineStyle,
+          axisLabelVisible: true,
+          title: spec.title
+        });
+        chartState.priceLines.push(pl);
+      } catch (e) {}
+    }
+
+    if (chartState.sessionPrimitive) {
+      chartState.sessionPrimitive.setData(boundaries, chartState.overlays.sessions);
+    }
+
+    // Add chart markers for HA >2 green/red streaks when viewing an HA timeframe
+    const markers = [];
+    if (chartState.overlays.haSr && chartState.activeTf !== '3m') {
+      const key = chartState.activeTf.replace('_ha', '');
+      const z = chartState.analysis && chartState.analysis.timeframes && chartState.analysis.timeframes[key];
+      if (z) {
+        for (const r of z.resistances) {
+          markers.push({
+            time: r.markerTime,
+            position: 'aboveBar',
+            color: '#ef4444',
+            shape: 'arrowDown',
+            text: `RES ${r.price.toFixed(0)} (${r.count}G)`
+          });
+        }
+        for (const s of z.supports) {
+          markers.push({
+            time: s.markerTime,
+            position: 'belowBar',
+            color: '#10b981',
+            shape: 'arrowUp',
+            text: `SUP ${s.price.toFixed(0)} (${s.count}R)`
+          });
+        }
+      }
+    }
+    markers.sort((x, y) => x.time - y.time);
+    try { chartState.candleSeries.setMarkers(markers); } catch (e) {}
+  } else {
+    drawFallbackCandles();
+  }
+}
+
+/* ============================================================
+   CHART RENDERER (TradingView Lightweight Charts + Canvas 2D Fallback)
+   ============================================================ */
 
 function initChartRenderer() {
   if (window.LightweightCharts) {
     const chart = window.LightweightCharts.createChart(C_DOM.chartContainer, {
-      layout: {
-        background: { color: '#0b1222' },
-        textColor: '#94a3b8'
-      },
+      layout: { background: { color: '#0b1222' }, textColor: '#94a3b8' },
       grid: {
         vertLines: { color: 'rgba(36, 50, 79, 0.45)' },
         horzLines: { color: 'rgba(36, 50, 79, 0.45)' }
@@ -190,17 +705,26 @@ function initChartRenderer() {
       wickDownColor: '#ef4444'
     });
 
+    if (typeof candleSeries.attachPrimitive === 'function') {
+      try {
+        const prim = new SessionLinesPrimitive();
+        candleSeries.attachPrimitive(prim);
+        chartState.sessionPrimitive = prim;
+      } catch (e) {}
+    }
+
     chart.subscribeCrosshairMove(param => {
+      const list = getDisplayedCandles();
       if (param && param.time && param.seriesData) {
         const d = param.seriesData.get(candleSeries);
         if (d) {
-          const match = chartState.candles.find(c => c.time === param.time);
+          const match = list.find(c => c.time === param.time);
           updateOhlcStrip({ ...d, time: param.time, source: match ? match.source : 'ws' });
           return;
         }
       }
-      if (chartState.candles.length > 0) {
-        updateOhlcStrip(chartState.candles[chartState.candles.length - 1]);
+      if (list.length > 0) {
+        updateOhlcStrip(list[list.length - 1]);
       }
     });
 
@@ -229,9 +753,9 @@ function initChartRenderer() {
   canvas.addEventListener('mousemove', e => {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const visible = chartState.candles.slice(-120);
+    const visible = getDisplayedCandles().slice(-120);
     if (visible.length === 0) return;
-    const plotW = Math.max(1, rect.width - 75);
+    const plotW = Math.max(1, rect.width - 80);
     const step = plotW / visible.length;
     const idx = Math.max(0, Math.min(visible.length - 1, Math.floor((x - 12) / step)));
     chartState.hoverIndex = idx;
@@ -241,9 +765,8 @@ function initChartRenderer() {
 
   canvas.addEventListener('mouseleave', () => {
     chartState.hoverIndex = null;
-    if (chartState.candles.length > 0) {
-      updateOhlcStrip(chartState.candles[chartState.candles.length - 1]);
-    }
+    const list = getDisplayedCandles();
+    if (list.length > 0) updateOhlcStrip(list[list.length - 1]);
     drawFallbackCandles();
   });
 
@@ -264,12 +787,12 @@ function drawFallbackCandles() {
   ctx.fillStyle = '#0b1222';
   ctx.fillRect(0, 0, width, height);
 
-  const visible = chartState.candles.slice(-120);
+  const visible = getDisplayedCandles().slice(-120);
   if (visible.length === 0) return;
 
   const padLeft = 12;
-  const padRight = 70;
-  const padTop = 18;
+  const padRight = 80;
+  const padTop = 22;
   const padBottom = 28;
   const plotW = Math.max(50, width - padLeft - padRight);
   const plotH = Math.max(50, height - padTop - padBottom);
@@ -280,6 +803,14 @@ function drawFallbackCandles() {
     if (c.low < minP) minP = c.low;
     if (c.high > maxP) maxP = c.high;
   }
+  const lineSpecs = buildAllPriceLineSpecs();
+  for (const sp of lineSpecs) {
+    if (sp.price >= minP * 0.985 && sp.price <= maxP * 1.015) {
+      if (sp.price < minP) minP = sp.price;
+      if (sp.price > maxP) maxP = sp.price;
+    }
+  }
+
   const range = Math.max(1, maxP - minP);
   minP -= range * 0.06;
   maxP += range * 0.06;
@@ -303,6 +834,50 @@ function drawFallbackCandles() {
   const step = plotW / visible.length;
   const bodyW = Math.max(2, Math.min(12, step * 0.65));
 
+  // Session Change Vertical Lines
+  if (chartState.overlays.sessions) {
+    let prevDate = getISTDateKey(visible[0].time);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.6)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 4]);
+    ctx.font = '10px JetBrains Mono, monospace';
+    for (let idx = 1; idx < visible.length; idx++) {
+      const dk = getISTDateKey(visible[idx].time);
+      if (dk !== prevDate) {
+        const cx = padLeft + idx * step;
+        ctx.beginPath();
+        ctx.moveTo(cx, padTop);
+        ctx.lineTo(cx, height - padBottom);
+        ctx.stroke();
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillText(`Session ${formatISTSessionLabel(visible[idx].time)}`, cx + 4, padTop + 10);
+        prevDate = dk;
+      }
+    }
+    ctx.restore();
+  }
+
+  // Horizontal Pivot / PDH / PDL / HA S/R Lines
+  for (const sp of lineSpecs) {
+    if (sp.price < minP || sp.price > maxP) continue;
+    const y = yOf(sp.price);
+    ctx.save();
+    ctx.strokeStyle = sp.color;
+    ctx.lineWidth = sp.lineWidth || 1;
+    if (sp.lineStyle === 2) ctx.setLineDash([5, 4]);
+    else if (sp.lineStyle === 3) ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(width - padRight, y);
+    ctx.stroke();
+    ctx.fillStyle = sp.color;
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.fillText(sp.title, padLeft + 4, Math.max(padTop + 10, y - 3));
+    ctx.restore();
+  }
+
+  // Candlesticks
   visible.forEach((c, idx) => {
     const cx = padLeft + idx * step + step / 2;
     const isUp = c.close >= c.open;
@@ -328,9 +903,10 @@ function drawFallbackCandles() {
   });
 }
 
-function setAllCandles(candles) {
-  chartState.candles = Array.isArray(candles) ? candles : [];
-  C_DOM.chartDbCountBadge.textContent = `${chartState.candles.length} Candles`;
+function renderActiveTimeframeSeries(fitContent = true) {
+  computeClientAnalysis();
+  const list = getDisplayedCandles(false);
+  C_DOM.chartDbCountBadge.textContent = `${chartState.candles.length} (3m) • ${list.length} Shown`;
 
   if (chartState.candles.length === 0) {
     C_DOM.chartEmptyOverlay.style.display = 'flex';
@@ -338,62 +914,66 @@ function setAllCandles(candles) {
     updateOhlcStrip(null);
   } else {
     C_DOM.chartEmptyOverlay.style.display = 'none';
-    const latest = chartState.candles[chartState.candles.length - 1];
-    updateOhlcStrip(latest);
-    C_DOM.chartStatusText.textContent = `Showing ${chartState.candles.length} NIFTY 3m candles (SQLite persisted + WebSocket live)`;
+    updateOhlcStrip(list[list.length - 1]);
+    C_DOM.chartStatusText.textContent = chartState.activeTf === '3m'
+      ? `Showing ${list.length} NIFTY 3m candles • Sessions + 5m/15m/1h HA S/R + Pivots + PDH/PDL`
+      : `Showing ${list.length} ${chartState.activeTf.replace('_ha', '').toUpperCase()} Heikin-Ashi candles`;
   }
 
   if (chartState.candleSeries) {
     chartState.candleSeries.setData(
-      chartState.candles.map(c => ({
-        time: c.time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close
-      }))
+      list.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close }))
     );
-    chartState.lwChart.timeScale().fitContent();
+    applyOverlays();
+    if (fitContent) {
+      chartState.lwChart.timeScale().fitContent();
+    }
   } else {
-    drawFallbackCandles();
+    applyOverlays();
   }
 }
 
-function applyLiveCandle(candle) {
+function setAllCandles(candles, candles1m = null) {
+  chartState.candles = Array.isArray(candles) ? candles : [];
+  if (Array.isArray(candles1m)) {
+    chartState.candles1m = candles1m;
+  }
+  renderActiveTimeframeSeries(true);
+}
+
+function applyLiveCandle(candle, candle1m = null) {
   if (!candle) return;
   const list = chartState.candles;
   const last = list[list.length - 1];
-
   if (last && last.time === candle.time) {
     list[list.length - 1] = candle;
   } else if (!last || candle.time > last.time) {
     list.push(candle);
   }
 
-  C_DOM.chartDbCountBadge.textContent = `${list.length} Candles`;
-  C_DOM.chartEmptyOverlay.style.display = 'none';
-  updateOhlcStrip(candle);
-  C_DOM.chartStatusText.textContent = `Live WebSocket 3m Candle • ${list.length} candles in SQLite`;
-
-  if (chartState.candleSeries) {
-    chartState.candleSeries.update({
-      time: candle.time,
-      open: candle.open,
-      high: candle.high,
-      low: candle.low,
-      close: candle.close
-    });
-  } else {
-    drawFallbackCandles();
+  if (candle1m) {
+    const l1 = chartState.candles1m;
+    const last1 = l1[l1.length - 1];
+    if (last1 && last1.time === candle1m.time) {
+      l1[l1.length - 1] = candle1m;
+    } else if (!last1 || candle1m.time > last1.time) {
+      l1.push(candle1m);
+    }
   }
+
+  renderActiveTimeframeSeries(false);
 }
+
+/* ============================================================
+   API LOADING, SSE STREAMING & CONTROLS
+   ============================================================ */
 
 async function loadInitialChart() {
   try {
     const res = await fetch('/api/nifty-chart?days=3');
     const d = await res.json();
     if (d.success) {
-      setAllCandles(d.candles || []);
+      setAllCandles(d.candles || [], d.candles1m || []);
       if (d.backfilled) {
         showToast(`Loaded ${d.count} 3-minute candles (last 3 days) into local SQLite DB.`, 'success');
       }
@@ -431,7 +1011,7 @@ function initEventSource() {
     try {
       const payload = JSON.parse(e.data);
       if (payload && payload.candle) {
-        applyLiveCandle(payload.candle);
+        applyLiveCandle(payload.candle, payload.candle1m || null);
       }
     } catch (err) {}
   });
@@ -440,7 +1020,7 @@ function initEventSource() {
     try {
       const payload = JSON.parse(e.data);
       if (payload && Array.isArray(payload.candles)) {
-        setAllCandles(payload.candles);
+        setAllCandles(payload.candles, payload.candles1m || null);
       }
     } catch (err) {}
   });
@@ -449,6 +1029,42 @@ function initEventSource() {
     C_DOM.connLabel.textContent = 'Reconnecting...';
     C_DOM.connStatus.querySelector('.status-indicator').className = 'status-indicator offline';
   };
+}
+
+if (C_DOM.chartTfGroup) {
+  C_DOM.chartTfGroup.querySelectorAll('.tf-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      C_DOM.chartTfGroup.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      chartState.activeTf = btn.getAttribute('data-tf') || '3m';
+      renderActiveTimeframeSeries(true);
+    });
+  });
+}
+
+if (C_DOM.toggleSessions) {
+  C_DOM.toggleSessions.addEventListener('change', () => {
+    chartState.overlays.sessions = C_DOM.toggleSessions.checked;
+    applyOverlays();
+  });
+}
+if (C_DOM.toggleHaSr) {
+  C_DOM.toggleHaSr.addEventListener('change', () => {
+    chartState.overlays.haSr = C_DOM.toggleHaSr.checked;
+    applyOverlays();
+  });
+}
+if (C_DOM.togglePdhPdl) {
+  C_DOM.togglePdhPdl.addEventListener('change', () => {
+    chartState.overlays.pdhPdl = C_DOM.togglePdhPdl.checked;
+    applyOverlays();
+  });
+}
+if (C_DOM.togglePivots) {
+  C_DOM.togglePivots.addEventListener('change', () => {
+    chartState.overlays.pivots = C_DOM.togglePivots.checked;
+    applyOverlays();
+  });
 }
 
 C_DOM.resetZoomBtn.addEventListener('click', () => {
@@ -470,7 +1086,7 @@ C_DOM.backfillBtn.addEventListener('click', async () => {
     });
     const d = await res.json();
     if (d.success) {
-      setAllCandles(d.candles || []);
+      setAllCandles(d.candles || [], d.candles1m || []);
       if (d.added > 0) {
         showToast(`Saved ${d.added} 3-minute candles from ${d.broker || 'broker'} to SQLite!`, 'success');
       } else {
