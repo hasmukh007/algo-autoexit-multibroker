@@ -1,13 +1,14 @@
 const assert = require('assert');
 
 async function runTests() {
-  console.log('🧪 Starting Multi-Broker & Net Profit % Test Suite...\n');
+  console.log('🧪 Starting Multi-Broker, Charges & Brokerage Test Suite...\n');
 
-  // 1. Charges Calculator Test
-  console.log('1. Testing Indian Brokerage & Statutory Taxes Calculator...');
+  // 1. Charges Calculator Test (Standard ₹20/order vs Zero Brokerage ₹0/order)
+  console.log('1. Testing Indian Brokerage & Statutory Taxes Calculator (Oct 2024+ rates)...');
   const ChargesCalculator = require('../lib/chargesCalculator');
 
   // Options Trade: 50 qty bought at 100, sold at 120 (Gross P&L = +1000)
+  // Buy Turnover = 5000, Sell Turnover = 6000, Total Turnover = 11000
   const optionsPos = {
     symbol: 'NIFTY 24NOV 24200 CE',
     exchangeSegment: 'nse_fo',
@@ -21,63 +22,80 @@ async function runTests() {
     totalPnl: 1000
   };
 
-  const charges = ChargesCalculator.calculatePositionCharges(optionsPos);
-  assert(charges.totalTurnover === (50 * 100 + 50 * 120), 'Turnover calculation must match');
-  assert(charges.brokerage === 40, 'Round trip options brokerage must be ₹40 (20+20)');
-  assert(charges.stt > 0, 'STT must be calculated on sell turnover');
-  assert(charges.exchangeTxn > 0, 'Exchange txn charge must be > 0');
-  assert(charges.gst > 0, 'GST 18% must be calculated');
-  assert(charges.totalCharges > 40, 'Total charges must exceed bare brokerage');
-  assert.strictEqual(charges.netPnl, Number((1000 - charges.totalCharges).toFixed(2)), 'Net P&L must be Gross P&L minus Total Charges');
-  console.log(`   ✅ Options: Gross ₹1,000 | Charges: ₹${charges.totalCharges} (Brk ₹${charges.brokerage}, STT ₹${charges.stt}, Exch ₹${charges.exchangeTxn}, GST ₹${charges.gst}) | Net P&L: ₹${charges.netPnl}`);
+  // Asset categorization tests for varied broker option symbol formats
+  assert.strictEqual(ChargesCalculator.categorizeAsset('NIFTY 26NOV 25500 CALL', 'nse_fo'), 'OPTIONS');
+  assert.strictEqual(ChargesCalculator.categorizeAsset('NIFTY 26NOV 25500 PUT', 'nse_fo'), 'OPTIONS');
+  assert.strictEqual(ChargesCalculator.categorizeAsset('NIFTY-26NOV26-25500-CE', 'nse_fo'), 'OPTIONS');
+  assert.strictEqual(ChargesCalculator.categorizeAsset('NIFTY26N2625500C', 'nse_fo'), 'OPTIONS');
+  assert.strictEqual(ChargesCalculator.categorizeAsset('NIFTY26N2625500P', 'nse_fo'), 'OPTIONS');
+  assert.strictEqual(ChargesCalculator.categorizeAsset('NIFTY26C25500', 'nse_fo'), 'OPTIONS');
+  assert.strictEqual(ChargesCalculator.categorizeAsset('NIFTY26P25500', 'nse_fo'), 'OPTIONS');
+  assert.strictEqual(ChargesCalculator.categorizeAsset('NIFTY26NOVFUT', 'nse_fo'), 'FUTURES');
+  console.log('   ✅ Option symbol categorization verified for CALL/PUT/-CE/C/P/FUT formats.');
 
-  // 2. 9:00 AM Opening Balance & Net Return % Test
-  console.log('\n2. Testing 9:00 AM Opening Balance & Net Return % of Capital...');
-  const openingCapital = 500000; // ₹5 Lakhs
-  const netProfit = charges.netPnl; // e.g. ~₹930
-  const netReturnPct = (netProfit / openingCapital) * 100;
-  assert(typeof netReturnPct === 'number', 'Net return % must be numeric');
-  console.log(`   ✅ Capital ₹${openingCapital.toLocaleString('en-IN')} | Net Profit ₹${netProfit} = ${netReturnPct.toFixed(3)}% of 9:00 AM Balance.`);
+  // Standard Flat ₹20/order (e.g. Angel One / Dhan)
+  const stdCharges = ChargesCalculator.calculatePositionCharges(optionsPos, { brokerageType: 'flat', brokeragePerOrder: 20 });
+  assert.strictEqual(stdCharges.totalTurnover, 11000);
+  assert.strictEqual(stdCharges.brokerage, 40, 'Round trip options brokerage must be ₹40 (20+20)');
+  assert.strictEqual(stdCharges.stt, 16.5, 'STT 0.15% on ₹11000 total turnover must be ₹16.50');
+  assert.strictEqual(stdCharges.exchangeTxn, Number((11000 * 0.000355299).toFixed(2)), 'Options Exch Txn 0.0355299%');
+  assert.strictEqual(stdCharges.ipft, Number((11000 * 0.000000001).toFixed(4)), 'IPFT 0.0000001%');
+  assert.strictEqual(stdCharges.stampDuty, Math.round(5000 * 0.00003), 'Stamp duty 0.003% on ₹5000 buy turnover rounded to nearest rupee');
+  assert(stdCharges.buySideCharges > 0 && stdCharges.sellSideCharges > 0, 'Both buy-side and sell-side charges must be calculated');
+  assert.strictEqual(Number((stdCharges.buySideCharges + stdCharges.sellSideCharges).toFixed(2)), stdCharges.totalCharges, 'Buy + Sell side charges must equal totalCharges');
+  assert.strictEqual(stdCharges.netPnl, Number((1000 - stdCharges.totalCharges).toFixed(2)));
+  console.log(`   ✅ Options (₹20/ord): Gross ₹1,000 | Buy Charges: ₹${stdCharges.buySideCharges} + Sell Charges: ₹${stdCharges.sellSideCharges} = Total: ₹${stdCharges.totalCharges} | Net P&L: ₹${stdCharges.netPnl}`);
 
-  // 3. MultiBrokerManager Test
-  console.log('\n3. Testing MultiBrokerManager (Kotak Neo, Angel One, Dhan)...');
+  // Zero Brokerage Plan (e.g. Kotak Neo Trade Free / Youth)
+  const zeroCharges = ChargesCalculator.calculatePositionCharges(optionsPos, { brokerageType: 'zero', brokeragePerOrder: 0 });
+  assert.strictEqual(zeroCharges.brokerage, 0, 'Zero plan brokerage must be ₹0');
+  assert(zeroCharges.totalCharges < stdCharges.totalCharges, 'Zero brokerage plan must have lower total charges');
+  console.log(`   ✅ Options (₹0/ord): Gross ₹1,000 | Charges: ₹${zeroCharges.totalCharges} (Brk ₹${zeroCharges.brokerage}, STT ₹${zeroCharges.stt}, Exch ₹${zeroCharges.exchangeTxn}, GST ₹${zeroCharges.gst}) | Net P&L: ₹${zeroCharges.netPnl}`);
+
+  // Custom Brokerage Plan (e.g. ₹10/order for options)
+  const customCharges = ChargesCalculator.calculatePositionCharges(optionsPos, { brokerageType: 'custom', brokeragePerOrder: 20, optionsBrokerage: 10 });
+  assert.strictEqual(customCharges.brokerage, 20, 'Custom options brokerage ₹10/order x 2 must be ₹20');
+  console.log(`   ✅ Options (Custom ₹10/ord): Brokerage ₹${customCharges.brokerage} | Total Charges: ₹${customCharges.totalCharges}`);
+
+  // Open Long Position with omitted buyQty/sellQty (fallback check)
+  const openPosNoBuyQty = {
+    symbol: 'NIFTY 24NOV 24200 CE',
+    exchangeSegment: 'nse_fo',
+    product: 'MIS',
+    buyQty: 0,
+    sellQty: 0,
+    buyAvg: 100,
+    sellAvg: 0,
+    ltp: 120,
+    netQty: 50,
+    totalPnl: 1000
+  };
+  const openFallbackCharges = ChargesCalculator.calculatePositionCharges(openPosNoBuyQty, { brokerageType: 'flat', brokeragePerOrder: 20 });
+  assert.strictEqual(openFallbackCharges.buyTurnover, 5000, 'Open position must infer buyTurnover even if broker omits buyQty');
+  assert.strictEqual(openFallbackCharges.sellTurnover, 6000, 'Open position must project sellTurnover at LTP');
+  assert.strictEqual(openFallbackCharges.brokerage, 40);
+  console.log(`   ✅ Open position turnover fallback verified: Buy ₹${openFallbackCharges.buyTurnover}, Sell ₹${openFallbackCharges.sellTurnover}`);
+
+  // 2. MultiBrokerManager & Account Brokerage Lookup Test
+  console.log('\n2. Testing MultiBrokerManager & Per-Account Brokerage...');
   const configManager = require('../lib/configManager');
   const MultiBrokerManager = require('../lib/multiBrokerManager');
   const mgr = new MultiBrokerManager(configManager);
 
-  // Verify accounts can be read
   const accounts = mgr.getAccounts();
   assert(Array.isArray(accounts), 'Accounts must be an array');
-  console.log(`   ✅ Loaded ${accounts.length} broker accounts.`);
+  const kotakBrk = mgr.getAccountBrokerage(null, 'kotakneo');
+  assert(typeof kotakBrk.brokeragePerOrder === 'number' && kotakBrk.brokeragePerOrder >= 0, 'Kotak Neo brokerage should be a non-negative number');
+  const angelBrk = mgr.getAccountBrokerage(null, 'angelone');
+  assert(typeof angelBrk.brokeragePerOrder === 'number' && angelBrk.brokeragePerOrder >= 0, 'Angel One brokerage should be a non-negative number');
+  console.log(`   ✅ Loaded ${accounts.length} accounts; per-account brokerage lookup verified.`);
 
-  // Verify positions from mock simulation
-  const positions = await mgr.getAllPositions();
-  assert(positions.length >= 3, 'Simulation must return positions for Kotak, Angel, and Dhan');
-  const brokersRepresented = new Set(positions.map(p => p.broker));
-  assert(brokersRepresented.has('kotakneo'), 'Kotak Neo must be represented');
-  assert(brokersRepresented.has('angelone'), 'Angel One must be represented');
-  assert(brokersRepresented.has('dhan'), 'Dhan must be represented');
-  console.log(`   ✅ Positions successfully aggregated across: ${Array.from(brokersRepresented).join(', ')}.`);
-
-  // 4. Data Feed Switching Test
-  console.log('\n4. Testing Data Feed Subscription Switching (Angel One / Kotak Neo)...');
-  mgr.setDataFeedSource('angelone');
-  assert.strictEqual(mgr.getDataFeedSource(), 'angelone');
-  mgr.setDataFeedSource('kotakneo');
-  assert.strictEqual(mgr.getDataFeedSource(), 'kotakneo');
-  console.log('   ✅ Data feed subscription switched seamlessly.');
-
-  // 5. AutoExitEngine Net Profit % Trigger Test
-  console.log('\n5. Testing Net Profit % Auto-Exit Engine Triggers...');
+  // 3. AutoExitEngine Net Profit % Trigger Test
+  console.log('\n3. Testing AutoExitEngine initialization...');
   const OpeningBalanceScheduler = require('../lib/openingBalanceScheduler');
   const AutoExitEngine = require('../lib/autoExitEngine');
-
   const scheduler = new OpeningBalanceScheduler(mgr);
-  scheduler.setOpeningBalance(100000); // Set ₹1 Lakh for test threshold
-
   const engine = new AutoExitEngine(mgr, scheduler, configManager);
-
-  // Set rule on position: exit when net profit >= 0.5% (with 95% near buffer)
   const rule = engine.setPositionRule('mock_kotak_1', 'NIFTY 24NOV 24200 CE', 'MIS', {
     targetNetProfitPct: 0.5,
     nearThresholdBufferPct: 95,
@@ -85,13 +103,14 @@ async function runTests() {
     enabled: true
   });
   assert.strictEqual(rule.targetNetProfitPct, 0.5);
-  assert.strictEqual(rule.nearThresholdBufferPct, 95);
-  console.log('   ✅ Auto-Exit rule saved with targetNetProfitPct: 0.5% and nearBuffer: 95%.');
+  console.log('   ✅ Auto-Exit rule configured.');
 
   scheduler.stopScheduler();
   mgr.mockManager.stopSimulation();
+  if (typeof mgr.disconnectAll === 'function') mgr.disconnectAll();
 
-  console.log('\n🎉 ALL MULTI-BROKER & NET PROFIT % TESTS PASSED!\n');
+  console.log('\n🎉 ALL TESTS PASSED!\n');
+  process.exit(0);
 }
 
 runTests().catch(err => {

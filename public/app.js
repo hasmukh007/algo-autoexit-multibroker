@@ -173,6 +173,13 @@ const DOM = {
   sahiSecret: document.getElementById('sahiSecret'),
   sahiTotpSecret: document.getElementById('sahiTotpSecret'),
   sahiAccessToken: document.getElementById('sahiAccessToken'),
+  accBrokerageType: document.getElementById('accBrokerageType'),
+  accBrokeragePerOrder: document.getElementById('accBrokeragePerOrder'),
+  customBrokerageFields: document.getElementById('customBrokerageFields'),
+  accOptionsBrokerage: document.getElementById('accOptionsBrokerage'),
+  accFuturesBrokerage: document.getElementById('accFuturesBrokerage'),
+  accIntradayBrokerage: document.getElementById('accIntradayBrokerage'),
+  accDeliveryBrokerage: document.getElementById('accDeliveryBrokerage'),
   accOneTimeTotp: document.getElementById('accOneTimeTotp'),
   testAccConnBtn: document.getElementById('testAccConnBtn'),
 
@@ -809,19 +816,23 @@ function renderAccountsTable() {
   DOM.accountsBtnText.textContent = `Brokers (${state.accounts.filter(a => a.enabled).length} Active)`;
 
   if (!state.accounts || state.accounts.length === 0) {
-    DOM.accountsTableBody.innerHTML = `<tr><td colspan="6" class="empty-state">No broker accounts configured.</td></tr>`;
+    DOM.accountsTableBody.innerHTML = `<tr><td colspan="7" class="empty-state">No broker accounts configured.</td></tr>`;
     return;
   }
 
   let html = '';
   state.accounts.forEach(acc => {
     const bClass = getBrokerBadgeClass(acc.broker);
+    const brkLabel = acc.brokerageType === 'zero' || acc.brokeragePerOrder === 0
+      ? '₹0/order'
+      : (acc.brokerageType === 'custom' ? `Custom (₹${acc.brokeragePerOrder}/ord)` : `₹${acc.brokeragePerOrder ?? 20}/order`);
 
     html += `
       <tr>
         <td><span class="badge ${bClass}">${acc.broker.toUpperCase()}</span></td>
         <td><strong>${acc.name}</strong></td>
         <td class="mono">${acc.clientCode || 'Configured'}</td>
+        <td class="mono">${brkLabel}</td>
         <td>
           <span class="badge" style="${acc.isAuthenticated ? 'background: var(--profit-bg); color: var(--profit-color);' : (acc.lastError ? 'background: var(--loss-bg); color: var(--loss-color);' : 'background: var(--warning-bg); color: var(--warning-color);')}">
             ${acc.isAuthenticated ? 'AUTHENTICATED' : (acc.lastError ? 'AUTH ERROR' : 'READY')}
@@ -830,6 +841,7 @@ function renderAccountsTable() {
         </td>
         <td class="mono">${acc.enabled ? 'Active' : 'Disabled'}</td>
         <td>
+          <button class="btn-xs btn-outline edit-acc-btn" data-id="${acc.id}">Edit</button>
           <button class="btn-xs btn-outline test-acc-btn" data-id="${acc.id}">Test Login</button>
           <button class="btn-xs btn-outline delete-acc-btn" data-id="${acc.id}">Delete</button>
         </td>
@@ -837,6 +849,14 @@ function renderAccountsTable() {
     `;
   });
   DOM.accountsTableBody.innerHTML = html;
+
+  document.querySelectorAll('.edit-acc-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      const acc = state.accounts.find(a => a.id === id);
+      if (acc) openEditAccountModal(acc);
+    });
+  });
 
   document.querySelectorAll('.test-acc-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -894,24 +914,44 @@ function openChargesModal(symbol, details) {
     <div style="font-size: 13px; line-height: 1.8;">
       <h4 style="margin-bottom: 12px; color: #fff;">Charges for <strong>${symbol}</strong></h4>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
-        <span>Total Turnover:</span>
+        <span>Buy Turnover / Sell Turnover:</span>
+        <strong class="mono">₹${details.buyTurnover ? details.buyTurnover.toLocaleString('en-IN') : '0.00'} / ₹${details.sellTurnover ? details.sellTurnover.toLocaleString('en-IN') : '0.00'}</strong>
+      </div>
+      <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
+        <span>Total Turnover (Buy + Sell):</span>
         <strong class="mono">₹${details.totalTurnover ? details.totalTurnover.toLocaleString('en-IN') : '0.00'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
-        <span>Brokerage:</span>
-        <strong class="mono">₹${details.brokerage ? details.brokerage.toFixed(2) : '0.00'}</strong>
+        <span>Buy Side Charges / Sell Side Charges:</span>
+        <strong class="mono">₹${details.buySideCharges !== undefined ? details.buySideCharges.toFixed(2) : '0.00'} / ₹${details.sellSideCharges !== undefined ? details.sellSideCharges.toFixed(2) : '0.00'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
+        <span>Brokerage (${details.orderSides || 2} orders &times; ₹${details.brokeragePerOrder !== undefined ? details.brokeragePerOrder : 20}/ord):</span>
+        <strong class="mono">₹${details.brokerage !== undefined ? details.brokerage.toFixed(2) : '0.00'}</strong>
+      </div>
+      ${details.dpCharges ? `<div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
+        <span>DP Charges:</span>
+        <strong class="mono">₹${details.dpCharges.toFixed(2)}</strong>
+      </div>` : ''}
+      ${details.delayedCharges ? `<div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
+        <span>Delayed Transaction Charges:</span>
+        <strong class="mono">₹${details.delayedCharges.toFixed(2)}</strong>
+      </div>` : ''}
+      <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
         <span>Securities Transaction Tax (STT):</span>
-        <strong class="mono">₹${details.stt ? details.stt.toFixed(2) : '0.00'}</strong>
+        <strong class="mono">₹${details.stt !== undefined ? details.stt.toFixed(2) : '0.00'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
         <span>Exchange Transaction Charges:</span>
-        <strong class="mono">₹${details.exchangeTxn ? details.exchangeTxn.toFixed(2) : '0.00'}</strong>
+        <strong class="mono">₹${details.exchangeTxn !== undefined ? details.exchangeTxn.toFixed(2) : '0.00'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
-        <span>GST (18% on Brokerage & Txn):</span>
-        <strong class="mono">₹${details.gst ? details.gst.toFixed(2) : '0.00'}</strong>
+        <span>IPFT Charges:</span>
+        <strong class="mono">₹${details.ipft !== undefined ? details.ipft.toFixed(4) : '0.0000'}</strong>
+      </div>
+      <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
+        <span>GST (18% on Brk, DP, Exch, IPFT, SEBI, Delayed):</span>
+        <strong class="mono">₹${details.gst !== undefined ? details.gst.toFixed(2) : '0.00'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
         <span>Stamp Duty:</span>
@@ -1119,15 +1159,105 @@ DOM.openAccountsBtn.addEventListener('click', () => {
 DOM.addNewAccountBtn.addEventListener('click', () => {
   DOM.accountModalTitle.textContent = 'Add Broker Account';
   DOM.editAccountId.value = '';
+  DOM.accBroker.disabled = false;
   DOM.accBroker.value = 'kotakneo';
   DOM.accName.value = '';
+  DOM.kotakConsumerKey.value = '';
+  DOM.kotakMobile.value = '';
+  DOM.kotakUcc.value = '';
+  DOM.kotakMpin.value = '';
+  DOM.kotakTotpSecret.value = '';
+  DOM.angelApiKey.value = '';
+  DOM.angelClientCode.value = '';
+  DOM.angelPassword.value = '';
+  DOM.angelTotpSecret.value = '';
+  DOM.dhanClientId.value = '';
+  DOM.dhanAccessToken.value = '';
+  if (DOM.sahiKeyId) DOM.sahiKeyId.value = '';
+  if (DOM.sahiSecret) DOM.sahiSecret.value = '';
+  if (DOM.sahiTotpSecret) DOM.sahiTotpSecret.value = '';
+  if (DOM.sahiAccessToken) DOM.sahiAccessToken.value = '';
+  applyBrokerageDefaults('kotakneo');
   switchBrokerFields('kotakneo');
   DOM.accountModal.classList.add('active');
 });
 DOM.closeAccountModal.addEventListener('click', () => DOM.accountModal.classList.remove('active'));
 
+function applyBrokerageDefaults(broker) {
+  if (!DOM.accBrokerageType) return;
+  const isKotak = broker === 'kotakneo';
+  DOM.accBrokerageType.value = isKotak ? 'zero' : 'flat';
+  DOM.accBrokeragePerOrder.value = isKotak ? '0' : '20';
+  updateBrokerageFieldsUI();
+}
+
+function updateBrokerageFieldsUI() {
+  if (!DOM.accBrokerageType) return;
+  const type = DOM.accBrokerageType.value;
+  if (type === 'zero') {
+    DOM.accBrokeragePerOrder.value = '0';
+    DOM.accBrokeragePerOrder.disabled = true;
+    DOM.customBrokerageFields.style.display = 'none';
+  } else if (type === 'flat') {
+    DOM.accBrokeragePerOrder.disabled = false;
+    if (DOM.accBrokeragePerOrder.value === '0') DOM.accBrokeragePerOrder.value = '20';
+    DOM.customBrokerageFields.style.display = 'none';
+  } else {
+    DOM.accBrokeragePerOrder.disabled = false;
+    DOM.customBrokerageFields.style.display = 'grid';
+  }
+}
+
+if (DOM.accBrokerageType) {
+  DOM.accBrokerageType.addEventListener('change', updateBrokerageFieldsUI);
+}
+
+function openEditAccountModal(acc) {
+  DOM.accountModalTitle.textContent = `Edit Broker Account: ${acc.name}`;
+  DOM.editAccountId.value = acc.id;
+  DOM.accBroker.value = acc.broker;
+  DOM.accBroker.disabled = true;
+  DOM.accName.value = acc.name || '';
+
+  // Populate non-secret fields; leave secrets blank so existing values are preserved unless updated
+  DOM.kotakConsumerKey.value = '';
+  DOM.kotakMobile.value = acc.mobileNumber || '';
+  DOM.kotakUcc.value = acc.ucc || acc.clientCode || '';
+  DOM.kotakMpin.value = '';
+  DOM.kotakTotpSecret.value = '';
+
+  DOM.angelApiKey.value = '';
+  DOM.angelClientCode.value = acc.clientCode || '';
+  DOM.angelPassword.value = '';
+  DOM.angelTotpSecret.value = '';
+
+  DOM.dhanClientId.value = acc.clientId || acc.clientCode || '';
+  DOM.dhanAccessToken.value = '';
+
+  if (DOM.sahiKeyId) DOM.sahiKeyId.value = acc.keyId || '';
+  if (DOM.sahiSecret) DOM.sahiSecret.value = '';
+  if (DOM.sahiTotpSecret) DOM.sahiTotpSecret.value = '';
+  if (DOM.sahiAccessToken) DOM.sahiAccessToken.value = '';
+
+  if (DOM.accBrokerageType) {
+    DOM.accBrokerageType.value = acc.brokerageType || (acc.brokeragePerOrder === 0 ? 'zero' : 'flat');
+    DOM.accBrokeragePerOrder.value = acc.brokeragePerOrder !== undefined ? acc.brokeragePerOrder : (acc.broker === 'kotakneo' ? 0 : 20);
+    DOM.accOptionsBrokerage.value = acc.optionsBrokerage !== undefined ? acc.optionsBrokerage : '';
+    DOM.accFuturesBrokerage.value = acc.futuresBrokerage !== undefined ? acc.futuresBrokerage : '';
+    DOM.accIntradayBrokerage.value = acc.equityIntradayBrokerage !== undefined ? acc.equityIntradayBrokerage : '';
+    DOM.accDeliveryBrokerage.value = acc.deliveryBrokerage !== undefined ? acc.deliveryBrokerage : '';
+    updateBrokerageFieldsUI();
+  }
+
+  switchBrokerFields(acc.broker);
+  DOM.accountModal.classList.add('active');
+}
+
 DOM.accBroker.addEventListener('change', e => {
   switchBrokerFields(e.target.value);
+  if (!DOM.editAccountId.value) {
+    applyBrokerageDefaults(e.target.value);
+  }
 });
 
 function switchBrokerFields(broker) {
@@ -1166,6 +1296,19 @@ function buildAccountPayloadFromModal() {
     payload.accessToken = DOM.sahiAccessToken ? DOM.sahiAccessToken.value.trim() : '';
   }
 
+  if (DOM.accBrokerageType) {
+    payload.brokerageType = DOM.accBrokerageType.value;
+    payload.brokeragePerOrder = DOM.accBrokerageType.value === 'zero'
+      ? 0
+      : Math.max(0, Number(DOM.accBrokeragePerOrder.value || 0));
+    if (DOM.accBrokerageType.value === 'custom') {
+      if (DOM.accOptionsBrokerage.value !== '') payload.optionsBrokerage = Number(DOM.accOptionsBrokerage.value);
+      if (DOM.accFuturesBrokerage.value !== '') payload.futuresBrokerage = Number(DOM.accFuturesBrokerage.value);
+      if (DOM.accIntradayBrokerage.value !== '') payload.equityIntradayBrokerage = Number(DOM.accIntradayBrokerage.value);
+      if (DOM.accDeliveryBrokerage.value !== '') payload.deliveryBrokerage = Number(DOM.accDeliveryBrokerage.value);
+    }
+  }
+
   if (DOM.accOneTimeTotp && DOM.accOneTimeTotp.value.trim()) {
     payload.totp = DOM.accOneTimeTotp.value.trim();
   }
@@ -1201,27 +1344,32 @@ if (DOM.testAccConnBtn) {
 DOM.accountForm.addEventListener('submit', async e => {
   e.preventDefault();
   const payload = buildAccountPayloadFromModal();
+  const editId = DOM.editAccountId.value;
+  const endpoint = editId ? `/api/accounts/${editId}` : '/api/accounts';
+  const method = editId ? 'PUT' : 'POST';
 
   try {
-    const res = await fetch('/api/accounts', {
-      method: 'POST',
+    const res = await fetch(endpoint, {
+      method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
     const d = await res.json();
     if (d.success) {
+      const actionWord = editId ? 'updated' : 'added';
       if (d.feedSubscribed) {
-        showToast(`Account added, logged in & subscribed to NIFTY + Option Chain feed (${formatFeedSourceLabel(d.dataFeedSource)})!`, 'success');
+        showToast(`Account ${actionWord}, logged in & subscribed to NIFTY + Option Chain feed (${formatFeedSourceLabel(d.dataFeedSource)})!`, 'success');
         if (d.niftyFeed) updateTopNiftyTicker(d.niftyFeed);
       } else {
         const reason = d.loginResult && d.loginResult.message ? ` (${d.loginResult.message})` : '';
-        showToast(`Account added! Click Test Login with TOTP to subscribe feed${reason}.`, 'info');
+        showToast(`Account ${actionWord}!${reason}`, 'info');
       }
       if (DOM.accOneTimeTotp) DOM.accOneTimeTotp.value = '';
       DOM.accountModal.classList.remove('active');
       loadAccounts();
+      loadPositions();
     } else {
-      showToast(d.message || 'Failed to add account', 'error');
+      showToast(d.message || `Failed to ${editId ? 'update' : 'add'} account`, 'error');
     }
   } catch (err) {
     showToast(err.message, 'error');

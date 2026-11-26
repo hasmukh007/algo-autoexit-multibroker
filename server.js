@@ -184,7 +184,9 @@ setInterval(async () => {
     let totalNetPnl = 0;
 
     const enrichedPositions = (rawPositions || []).map(pos => {
-      const chargeInfo = ChargesCalculator.calculatePositionCharges(pos);
+      const brokerPref = multiBrokerManager.getAccountBrokerage(pos.accountId, pos.broker);
+      const executedOrderCount = multiBrokerManager.getExecutedOrderCount(pos.accountId, pos.symbol);
+      const chargeInfo = ChargesCalculator.calculatePositionCharges({ ...pos, executedOrderCount }, brokerPref);
       totalGrossPnl += chargeInfo.grossPnl;
       totalCharges += chargeInfo.totalCharges;
       totalNetPnl += chargeInfo.netPnl;
@@ -543,7 +545,9 @@ const server = http.createServer(async (req, res) => {
         const openingBalance = Number(openBalData.openingBalance || 500000);
 
         const enrichedPositions = (rawPositions || []).map(pos => {
-          const chargeInfo = ChargesCalculator.calculatePositionCharges(pos);
+          const brokerPref = multiBrokerManager.getAccountBrokerage(pos.accountId, pos.broker);
+          const executedOrderCount = multiBrokerManager.getExecutedOrderCount(pos.accountId, pos.symbol);
+          const chargeInfo = ChargesCalculator.calculatePositionCharges({ ...pos, executedOrderCount }, brokerPref);
           const netProfitPctOfCapital = openingBalance > 0
             ? Number(((chargeInfo.netPnl / openingBalance) * 100).toFixed(2))
             : 0;

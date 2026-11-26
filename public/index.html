@@ -598,6 +598,7 @@
                 <th>Broker</th>
                 <th>Account Name</th>
                 <th>Client Code / UCC</th>
+                <th>Brokerage</th>
                 <th>Status</th>
                 <th>Available Balance</th>
                 <th>Action</th>
@@ -605,7 +606,7 @@
             </thead>
             <tbody id="accountsTableBody">
               <tr>
-                <td colspan="6" class="empty-state">Loading accounts...</td>
+                <td colspan="7" class="empty-state">Loading accounts...</td>
               </tr>
             </tbody>
           </table>
@@ -772,6 +773,43 @@
               <div class="form-group">
                 <label>Pre-Minted Access Token (Optional)</label>
                 <input type="text" id="sahiAccessToken" placeholder="Optional Bearer token if already minted">
+              </div>
+            </div>
+          </div>
+
+          <div class="broker-fields" id="brokerageConfigSection">
+            <h4>Brokerage Settings (per executed order)</h4>
+            <div class="form-row two-col">
+              <div class="form-group">
+                <label for="accBrokerageType">Brokerage Plan</label>
+                <select id="accBrokerageType">
+                  <option value="zero">Zero Brokerage (₹0 / order — Kotak Trade Free / Youth)</option>
+                  <option value="flat" selected>Flat Brokerage per Order (₹20 or custom)</option>
+                  <option value="custom">Custom Segment-wise Rates</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="accBrokeragePerOrder">Brokerage per Order (₹)</label>
+                <input type="number" id="accBrokeragePerOrder" step="1" min="0" value="20" placeholder="e.g. 20 or 0">
+                <span class="input-hint">Applied per executed order (2 orders for entry + exit)</span>
+              </div>
+            </div>
+            <div id="customBrokerageFields" class="form-row two-col" style="display: none; margin-top: 8px;">
+              <div class="form-group">
+                <label for="accOptionsBrokerage">Options (₹/order)</label>
+                <input type="number" id="accOptionsBrokerage" step="1" min="0" placeholder="e.g. 20 or 0">
+              </div>
+              <div class="form-group">
+                <label for="accFuturesBrokerage">Futures (₹/order)</label>
+                <input type="number" id="accFuturesBrokerage" step="1" min="0" placeholder="e.g. 20 or 0">
+              </div>
+              <div class="form-group">
+                <label for="accIntradayBrokerage">Equity Intraday (₹/order cap)</label>
+                <input type="number" id="accIntradayBrokerage" step="1" min="0" placeholder="e.g. 20 or 0">
+              </div>
+              <div class="form-group">
+                <label for="accDeliveryBrokerage">Equity Delivery (₹/order)</label>
+                <input type="number" id="accDeliveryBrokerage" step="1" min="0" placeholder="e.g. 0 or 20">
               </div>
             </div>
           </div>

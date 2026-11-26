@@ -1,7 +1,7 @@
 {
   "date": "2026-11-26",
   "openingBalance": 36716.33,
-  "capturedAt": "2026-11-26T08:12:16.324Z",
+  "capturedAt": "2026-11-26T15:00:49.759Z",
   "isAutoCaptured": true,
   "accounts": [
     {
@@ -29,5 +29,5 @@
       "totalBalance": 36716.33
     }
   ],
-  "timeFormatted": "1:42:16 pm IST"
+  "timeFormatted": "8:30:49 PM IST"
 }

@@ -18,7 +18,11 @@
     "mobileNumber": "+919227228787",
     "ucc": "118BB",
     "mpin": "190914",
-    "totpSecret": "2RPFZONDB7XOVZLCSJLZKR5K64"
+    "totpSecret": "2RPFZONDB7XOVZLCSJLZKR5K64",
+    "brokerageType": "custom",
+    "brokeragePerOrder": 10,
+    "optionsBrokerage": 10,
+    "futuresBrokerage": 54
   },
   {
     "id": "acc_sahi_1795675532208",
@@ -28,6 +32,8 @@
     "keyId": "pk_dc3s6n4dabls73cmn6bg",
     "secret": "sahi_sk_uxs2TR4lzkyIFEcp8n3gP19wEC5EYTqPxv8EbnnfMTE_eb47ba96",
     "totpSecret": "UXIEMHF3MSJ2RF2CBVZ4XHSKT5Y2O4Y5",
-    "accessToken": ""
+    "accessToken": "",
+    "brokerageType": "flat",
+    "brokeragePerOrder": 10
   }
 ]
