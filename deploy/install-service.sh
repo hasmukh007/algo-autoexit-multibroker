@@ -5,8 +5,8 @@ SERVICE_NAME="algo-autoexit"
 RESTART_UNIT="${SERVICE_NAME}-restart"
 APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 NODE_BIN="$(command -v node || true)"
-RUN_USER="${SUDO_USER:-$(id -un)}"
-RUN_GROUP="$(id -gn "$RUN_USER")"
+RUN_USER="root"
+RUN_GROUP="root"
 
 if [ -z "$NODE_BIN" ]; then
   echo "Error: node binary not found in PATH." >&2
