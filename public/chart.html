@@ -29,6 +29,10 @@
           <span class="pill-label">ATM:</span>
           <strong class="mono" id="topNiftyAtm">--</strong>
         </div>
+        <div class="nifty-atm-pill" id="candleCountdownTopPill" title="Time left until current candle closes">
+          <span class="pill-label" id="candleCountdownTopLabel">Bar (3m):</span>
+          <strong class="mono" id="candleCountdownDisplay" style="color:#fbbf24;">--:--</strong>
+        </div>
         <div class="nifty-feed-pill" id="topNiftyFeedPill">
           <span class="pulse-dot"></span>
           <span id="topNiftyFeedStatus">9:00 AM Feed: Initializing...</span>
@@ -88,6 +92,9 @@
       </div>
 
       <div class="nav-right">
+        <button class="btn-primary btn-sm" id="openChartOrderBtn" style="background: var(--profit-color);" title="Place NIFTY Option Order from Chart">
+          Place Order
+        </button>
         <button class="btn-outline btn-sm" id="resetZoomBtn">Reset Zoom</button>
         <button class="btn-primary btn-sm" id="backfillBtn" title="Fetch last 3 days of 3-minute candles from active live broker REST API">
           Load 3 Days History
@@ -109,6 +116,7 @@
         <span>L: <strong id="candleLowDisplay">--</strong></span>
         <span>C: <strong id="candleCloseDisplay">--</strong></span>
         <span>Source: <strong id="candleSourceDisplay">--</strong></span>
+        <span>Closes in: <strong id="candleBarCountdown" style="color:#fbbf24;">--:--</strong></span>
       </div>
       <div class="chart-overlay-toggles">
         <label class="overlay-toggle"><input type="checkbox" id="toggleSessions" checked><span>Session Line</span></label>
@@ -149,6 +157,116 @@
         </div>
       </div>
     </main>
+  </div>
+
+  <!-- QUICK ORDER MODAL FROM CHART -->
+  <div class="modal-backdrop" id="chartOrderModal">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <h3 id="chartOrderModalTitle">Place NIFTY Option Order</h3>
+        <button type="button" class="btn-close" id="closeChartOrderModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="chartOrderForm">
+          <input type="hidden" id="chOrdSymbol">
+          <input type="hidden" id="chOrdToken">
+          <div class="modal-pos-summary" style="grid-template-columns: repeat(3, 1fr);">
+            <div>Contract: <strong id="chOrdSymbolLabel">--</strong></div>
+            <div>Current Price: <strong class="mono" id="chOrdLtpLabel" style="color:var(--profit-color);">--</strong></div>
+            <div>Balance: <strong class="mono" id="chOrdBalanceLabel">--</strong></div>
+          </div>
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <label for="chOrdBroker">Broker Account</label>
+              <select id="chOrdBroker" required></select>
+            </div>
+            <div class="form-group">
+              <label for="chOrdRoutingMode">Place Order On</label>
+              <select id="chOrdRoutingMode">
+                <option value="selected" selected>Selected Broker Only</option>
+                <option value="all_funded">All Brokers w/ Enough Funds</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                <label for="chOrdStrikeSelect">Strike Price (NIFTY)</label>
+                <button type="button" class="btn-text" id="chResetAtmBtn">Use ATM</button>
+              </div>
+              <select id="chOrdStrikeSelect">
+                <option value="">ATM Strike (Awaiting feed...)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Option Type (Call / Put)</label>
+              <div class="chart-tf-group" style="display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:4px;">
+                <button type="button" class="tf-btn active" id="chCeBtn">CALL (CE)</button>
+                <button type="button" class="tf-btn" id="chPeBtn">PUT (PE)</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <label for="chOrdSide">Side</label>
+              <select id="chOrdSide">
+                <option value="B" selected>BUY</option>
+                <option value="S">SELL</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="chOrdProduct">Product</label>
+              <select id="chOrdProduct">
+                <option value="MIS" selected>MIS (Intraday)</option>
+                <option value="NRML">NRML (Overnight)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                <label for="chOrdQty" id="chOrdQtyLabel">Quantity (NIFTY Lot = 65)</label>
+                <label style="font-size:11px; color:var(--text-secondary); display:inline-flex; align-items:center; gap:4px; cursor:pointer;">
+                  <input type="checkbox" id="chAutoQty" checked>
+                  <span>Auto from Balance</span>
+                </label>
+              </div>
+              <input type="number" id="chOrdQty" value="65" min="65" step="65" required>
+              <span class="input-hint mono" id="chSizingHint" style="display:block; margin-top:4px;">Lot: 65 | Freeze: 1755</span>
+            </div>
+            <div class="form-group">
+              <label for="chOrdType">Order Type</label>
+              <select id="chOrdType">
+                <option value="MKT" selected>MARKET (MKT)</option>
+                <option value="L">LIMIT (L)</option>
+                <option value="SL">STOP LOSS (SL-LMT)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row two-col" id="chOrdPricingRow" style="display: none; margin-bottom: 12px;">
+            <div class="form-group" id="chOrdTriggerGroup" style="display: none;">
+              <label for="chOrdTriggerPrice">Trigger Price (₹)</label>
+              <input type="number" id="chOrdTriggerPrice" step="0.05" value="0.00">
+            </div>
+            <div class="form-group" id="chOrdPriceGroup">
+              <label for="chOrdPrice" id="chOrdPriceLabel">Limit Price (₹)</label>
+              <input type="number" id="chOrdPrice" step="0.05" value="0.00">
+              <span class="input-hint" id="chOrdPriceHint">Buy +0.50 / Sell -0.50 default (never overwritten by ticks)</span>
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn-outline" id="cancelChartOrderBtn">Cancel</button>
+            <button type="submit" class="btn-primary btn-buy" id="submitChartOrderBtn">Place BUY Order</button>
+          </div>
+        </form>
+      </div>
+    </div>
   </div>
 
   <div class="toast-container" id="toastContainer"></div>

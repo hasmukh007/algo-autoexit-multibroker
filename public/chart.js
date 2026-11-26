@@ -31,6 +31,8 @@ const chartState = {
   previousNiftyLtp: null,
   lwChart: null,
   candleSeries: null,
+  livePriceLine: null,
+  liveCountdownText: '--:--',
   sessionPrimitive: null,
   priceLines: [],
   fallbackCanvas: null,
@@ -55,6 +57,10 @@ const C_DOM = {
 
   istClock: document.getElementById('istClock'),
   marketPill: document.getElementById('marketPill'),
+  candleCountdownTopLabel: document.getElementById('candleCountdownTopLabel'),
+  candleCountdownDisplay: document.getElementById('candleCountdownDisplay'),
+  candleBarCountdown: document.getElementById('candleBarCountdown'),
+  openChartOrderBtn: document.getElementById('openChartOrderBtn'),
   chartDbCountBadge: document.getElementById('chartDbCountBadge'),
   chartTfGroup: document.getElementById('chartTfGroup'),
   chartActiveLabel: document.getElementById('chartActiveLabel'),
@@ -90,7 +96,40 @@ const C_DOM = {
   chartStatusText: document.getElementById('chartStatusText'),
   chartContainer: document.getElementById('chartContainer'),
   chartEmptyOverlay: document.getElementById('chartEmptyOverlay'),
-  toastContainer: document.getElementById('toastContainer')
+  toastContainer: document.getElementById('toastContainer'),
+
+  // Chart Quick Order Modal
+  chartOrderModal: document.getElementById('chartOrderModal'),
+  closeChartOrderModal: document.getElementById('closeChartOrderModal'),
+  cancelChartOrderBtn: document.getElementById('cancelChartOrderBtn'),
+  chartOrderModalTitle: document.getElementById('chartOrderModalTitle'),
+  chartOrderForm: document.getElementById('chartOrderForm'),
+  chOrdSymbol: document.getElementById('chOrdSymbol'),
+  chOrdToken: document.getElementById('chOrdToken'),
+  chOrdSymbolLabel: document.getElementById('chOrdSymbolLabel'),
+  chOrdLtpLabel: document.getElementById('chOrdLtpLabel'),
+  chOrdBalanceLabel: document.getElementById('chOrdBalanceLabel'),
+  chOrdBroker: document.getElementById('chOrdBroker'),
+  chOrdRoutingMode: document.getElementById('chOrdRoutingMode'),
+  chOrdStrikeSelect: document.getElementById('chOrdStrikeSelect'),
+  chResetAtmBtn: document.getElementById('chResetAtmBtn'),
+  chCeBtn: document.getElementById('chCeBtn'),
+  chPeBtn: document.getElementById('chPeBtn'),
+  chOrdSide: document.getElementById('chOrdSide'),
+  chOrdProduct: document.getElementById('chOrdProduct'),
+  chOrdQtyLabel: document.getElementById('chOrdQtyLabel'),
+  chAutoQty: document.getElementById('chAutoQty'),
+  chOrdQty: document.getElementById('chOrdQty'),
+  chSizingHint: document.getElementById('chSizingHint'),
+  chOrdType: document.getElementById('chOrdType'),
+  chOrdPricingRow: document.getElementById('chOrdPricingRow'),
+  chOrdTriggerGroup: document.getElementById('chOrdTriggerGroup'),
+  chOrdTriggerPrice: document.getElementById('chOrdTriggerPrice'),
+  chOrdPriceGroup: document.getElementById('chOrdPriceGroup'),
+  chOrdPriceLabel: document.getElementById('chOrdPriceLabel'),
+  chOrdPriceHint: document.getElementById('chOrdPriceHint'),
+  chOrdPrice: document.getElementById('chOrdPrice'),
+  submitChartOrderBtn: document.getElementById('submitChartOrderBtn')
 };
 
 /* ============================================================
@@ -441,6 +480,67 @@ function formatISTTime(epochSec, includeDate = true) {
   return `${dd} ${months[d.getUTCMonth()]} ${hh}:${mm}`;
 }
 
+function getActiveBarPeriodSeconds() {
+  if (chartState.activeTf === '5m_ha') return 300;
+  if (chartState.activeTf === '15m_ha') return 900;
+  if (chartState.activeTf === '1h_ha') return 3600;
+  return 180;
+}
+
+function getActiveTfShortLabel() {
+  if (chartState.activeTf === '5m_ha') return '5m HA';
+  if (chartState.activeTf === '15m_ha') return '15m HA';
+  if (chartState.activeTf === '1h_ha') return '1h HA';
+  return '3m';
+}
+
+function updateCandleCountdown(istNow) {
+  const now = istNow || new Date(Date.now() + IST_OFFSET_SEC * 1000);
+  const useUtcFields = !istNow;
+  const day = useUtcFields ? now.getUTCDay() : now.getDay();
+  const hh = useUtcFields ? now.getUTCHours() : now.getHours();
+  const mm = useUtcFields ? now.getUTCMinutes() : now.getMinutes();
+  const ss = useUtcFields ? now.getUTCSeconds() : now.getSeconds();
+  const secOfDay = hh * 3600 + mm * 60 + ss;
+  const closeSec = 15 * 3600 + 30 * 60;
+  const tfSec = getActiveBarPeriodSeconds();
+  const tfLabel = getActiveTfShortLabel();
+
+  let topLabel = `Bar (${tfLabel}):`;
+  let countdownStr = '--:--';
+
+  if (day >= 1 && day <= 5 && secOfDay >= NSE_SESSION_START_SEC && secOfDay < closeSec) {
+    const elapsedInSession = secOfDay - NSE_SESSION_START_SEC;
+    const nextCloseElapsed = Math.min(closeSec - NSE_SESSION_START_SEC, (Math.floor(elapsedInSession / tfSec) + 1) * tfSec);
+    const rem = Math.max(0, nextCloseElapsed - elapsedInSession);
+    const rMin = Math.floor(rem / 60);
+    const rSec = rem % 60;
+    countdownStr = rem >= 3600
+      ? `${String(Math.floor(rem / 3600)).padStart(2, '0')}:${String(Math.floor((rem % 3600) / 60)).padStart(2, '0')}:${String(rSec).padStart(2, '0')}`
+      : `${String(rMin).padStart(2, '0')}:${String(rSec).padStart(2, '0')}`;
+  } else {
+    topLabel = 'Next Open:';
+    let daysAhead = 0;
+    if (day === 0) daysAhead = 1;
+    else if (day === 6) daysAhead = 2;
+    else if (secOfDay >= closeSec) daysAhead = day === 5 ? 3 : 1;
+    const targetSec = daysAhead * 86400 + NSE_SESSION_START_SEC;
+    const rem = Math.max(0, targetSec - secOfDay);
+    const h = Math.floor(rem / 3600);
+    const m = Math.floor((rem % 3600) / 60);
+    const s = rem % 60;
+    countdownStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+
+  if (C_DOM.candleCountdownTopLabel) C_DOM.candleCountdownTopLabel.textContent = topLabel;
+  if (C_DOM.candleCountdownDisplay) C_DOM.candleCountdownDisplay.textContent = countdownStr;
+  if (C_DOM.candleBarCountdown) C_DOM.candleBarCountdown.textContent = countdownStr;
+  chartState.liveCountdownText = countdownStr;
+  if (typeof updateLivePriceLineWithCountdown === 'function') {
+    updateLivePriceLineWithCountdown();
+  }
+}
+
 function updateClock() {
   const now = new Date();
   const utc = now.getTime() + now.getTimezoneOffset() * 60000;
@@ -462,6 +562,7 @@ function updateClock() {
     C_DOM.marketPill.textContent = 'MARKET CLOSED';
     C_DOM.marketPill.className = 'market-pill closed';
   }
+  updateCandleCountdown(ist);
 }
 setInterval(updateClock, 1000);
 updateClock();
@@ -497,6 +598,9 @@ function updateTopNiftyBar(snapshot) {
   C_DOM.topNiftyHigh.textContent = spot.high !== null && spot.high !== undefined ? Number(spot.high).toFixed(2) : '--';
   C_DOM.topNiftyLow.textContent = spot.low !== null && spot.low !== undefined ? Number(spot.low).toFixed(2) : '--';
   C_DOM.topNiftyAtm.textContent = snapshot.atmStrike || '--';
+  if (typeof updateLivePriceLineWithCountdown === 'function') {
+    updateLivePriceLineWithCountdown();
+  }
 
   const fs = snapshot.feedState || {};
   const isLive = fs.sourceMode === 'live_broker';
@@ -620,6 +724,46 @@ function buildAllPriceLineSpecs() {
   return lines;
 }
 
+function getLiveChartPriceAndColor() {
+  const list = getDisplayedCandles(false);
+  const lastCandle = list.length > 0 ? list[list.length - 1] : null;
+  const spotLtp = Number(chartState.previousNiftyLtp || 0);
+  const livePrice = (chartState.activeTf === '3m' && spotLtp > 0)
+    ? spotLtp
+    : (lastCandle ? Number(lastCandle.close) : spotLtp);
+  if (!(livePrice > 0)) return null;
+  const isUp = !lastCandle || livePrice >= Number(lastCandle.open);
+  return { livePrice, color: isUp ? '#10b981' : '#ef4444' };
+}
+
+function updateLivePriceLineWithCountdown() {
+  const info = getLiveChartPriceAndColor();
+  if (!info) return;
+  const lineTitle = `${getActiveTfShortLabel()} • ${chartState.liveCountdownText || '--:--'}`;
+  if (chartState.candleSeries) {
+    try {
+      if (!chartState.livePriceLine) {
+        chartState.livePriceLine = chartState.candleSeries.createPriceLine({
+          price: info.livePrice,
+          color: info.color,
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: lineTitle
+        });
+      } else {
+        chartState.livePriceLine.applyOptions({
+          price: info.livePrice,
+          color: info.color,
+          title: lineTitle
+        });
+      }
+    } catch (e) {}
+  } else if (chartState.fallbackCanvas) {
+    drawFallbackCandles();
+  }
+}
+
 function applyOverlays() {
   computeClientAnalysis();
   updateLevelsSummaryBar();
@@ -646,6 +790,7 @@ function applyOverlays() {
         chartState.priceLines.push(pl);
       } catch (e) {}
     }
+    updateLivePriceLineWithCountdown();
 
     if (chartState.sessionPrimitive) {
       chartState.sessionPrimitive.setData(boundaries, chartState.overlays.sessions);
@@ -714,7 +859,9 @@ function initChartRenderer() {
       downColor: '#ef4444',
       borderVisible: false,
       wickUpColor: '#10b981',
-      wickDownColor: '#ef4444'
+      wickDownColor: '#ef4444',
+      priceLineVisible: false,
+      lastValueVisible: false
     });
 
     if (typeof candleSeries.attachPrimitive === 'function') {
@@ -913,6 +1060,30 @@ function drawFallbackCandles() {
       ctx.fillText(formatISTTime(c.time, false), cx - 16, height - 8);
     }
   });
+
+  // Live Price Line with Bar Countdown
+  const liveInfo = getLiveChartPriceAndColor();
+  if (liveInfo && liveInfo.livePrice >= minP && liveInfo.livePrice <= maxP) {
+    const yLive = yOf(liveInfo.livePrice);
+    const cdText = chartState.liveCountdownText || '--:--';
+    ctx.save();
+    ctx.strokeStyle = liveInfo.color;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(padLeft, yLive);
+    ctx.lineTo(width - padRight, yLive);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = liveInfo.color;
+    ctx.fillRect(width - padRight + 2, yLive - 10, padRight - 6, 30);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 10px JetBrains Mono, monospace';
+    ctx.fillText(liveInfo.livePrice.toFixed(2), width - padRight + 6, yLive + 2);
+    ctx.fillStyle = '#fef08a';
+    ctx.fillText(cdText, width - padRight + 6, yLive + 14);
+    ctx.restore();
+  }
 }
 
 function renderActiveTimeframeSeries(fitContent = true) {
@@ -1001,6 +1172,7 @@ async function loadNiftySpotSnapshot() {
     const d = await res.json();
     if (d.success && d.data) {
       updateTopNiftyBar(d.data);
+      updateChartOrderSnapshot(d.data);
     }
   } catch (e) {}
 }
@@ -1015,7 +1187,9 @@ function initEventSource() {
 
   es.addEventListener('nifty_tick', e => {
     try {
-      updateTopNiftyBar(JSON.parse(e.data));
+      const snap = JSON.parse(e.data);
+      updateTopNiftyBar(snap);
+      updateChartOrderSnapshot(snap);
     } catch (err) {}
   });
 
@@ -1050,6 +1224,7 @@ if (C_DOM.chartTfGroup) {
       btn.classList.add('active');
       chartState.activeTf = btn.getAttribute('data-tf') || '3m';
       renderActiveTimeframeSeries(true);
+      updateClock();
     });
   });
 }
@@ -1112,9 +1287,421 @@ C_DOM.backfillBtn.addEventListener('click', async () => {
   }
 });
 
+/* ============================================================
+   CHART QUICK ORDER MODAL (ATM CE/PE, STRIKES, COUNTDOWN & SIZING)
+   ============================================================ */
+
+const chartOrderState = {
+  snapshot: null,
+  optType: 'CE', // 'CE' | 'PE'
+  useAtm: true,
+  selectedStrike: null,
+  strikeSig: '',
+  ltp: 0,
+  lotSize: 65,
+  freezeQty: 1755,
+  availableCash: 0,
+  rate: 0,
+  limitEdited: false,
+  triggerEdited: false,
+  sizingSeq: 0,
+  routingMode: 'selected',
+  eligibleBrokers: [],
+  skippedBrokers: []
+};
+
+function roundChTick(val, step = 0.05) {
+  const n = Number(val || 0);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Number((Math.round(n / step) * step).toFixed(2));
+}
+
+function defaultChLimitPrice(basePrice, side) {
+  const p = Number(basePrice || 0);
+  if (!(p > 0)) return 0;
+  return roundChTick(Math.max(0.05, p + (side === 'S' ? -0.5 : 0.5)));
+}
+
+async function loadChartOrderAccounts() {
+  try {
+    const [accRes, statusRes] = await Promise.all([
+      fetch('/api/accounts'),
+      fetch('/api/status')
+    ]);
+    const d = await accRes.json();
+    const st = await statusRes.json().catch(() => null);
+    let storedRoute = '';
+    try { storedRoute = localStorage.getItem('algo_order_routing_mode') || ''; } catch (e) {}
+    const rMode = storedRoute || (st && st.success && st.riskSettings && st.riskSettings.orderRoutingMode) || 'selected';
+    if (C_DOM.chOrdRoutingMode) {
+      C_DOM.chOrdRoutingMode.value = rMode === 'all_funded' ? 'all_funded' : 'selected';
+    }
+    if (d.success && Array.isArray(d.data) && C_DOM.chOrdBroker) {
+      let storedBroker = '';
+      try { storedBroker = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
+      const prev = C_DOM.chOrdBroker.value || storedBroker;
+      C_DOM.chOrdBroker.innerHTML = '';
+      d.data.forEach(acc => {
+        const opt = document.createElement('option');
+        opt.value = acc.id;
+        opt.textContent = `${acc.name} (${acc.broker.toUpperCase()})`;
+        C_DOM.chOrdBroker.appendChild(opt);
+      });
+      if (prev && d.data.some(a => a.id === prev)) {
+        C_DOM.chOrdBroker.value = prev;
+      }
+    }
+  } catch (e) {}
+}
+
+function populateChartStrikeDropdown(snap) {
+  if (!C_DOM.chOrdStrikeSelect || !snap || !Array.isArray(snap.strikes) || snap.strikes.length === 0) return;
+  const sig = snap.strikes.map(r => `${r.strike}:${r.isAtm ? 1 : 0}`).join('|');
+  const formatLbl = row => {
+    const tag = row.isAtm ? ' (ATM)' : (row.moneynessLabel ? ` (${row.moneynessLabel})` : '');
+    const ceL = row.ce && Number(row.ce.ltp) > 0 ? `CE ₹${Number(row.ce.ltp).toFixed(1)}` : 'CE --';
+    const peL = row.pe && Number(row.pe.ltp) > 0 ? `PE ₹${Number(row.pe.ltp).toFixed(1)}` : 'PE --';
+    return `${row.strike}${tag} — ${ceL} | ${peL}`;
+  };
+  if (C_DOM.chOrdStrikeSelect.options.length !== snap.strikes.length || chartOrderState.strikeSig !== sig) {
+    chartOrderState.strikeSig = sig;
+    C_DOM.chOrdStrikeSelect.innerHTML = '';
+    snap.strikes.forEach(row => {
+      const opt = document.createElement('option');
+      opt.value = String(row.strike);
+      opt.textContent = formatLbl(row);
+      C_DOM.chOrdStrikeSelect.appendChild(opt);
+    });
+  } else {
+    snap.strikes.forEach((row, idx) => {
+      const opt = C_DOM.chOrdStrikeSelect.options[idx];
+      if (opt) opt.textContent = formatLbl(row);
+    });
+  }
+  const desired = (!chartOrderState.useAtm && chartOrderState.selectedStrike)
+    ? String(chartOrderState.selectedStrike)
+    : String(snap.atmStrike || snap.strikes[Math.floor(snap.strikes.length / 2)].strike);
+  if (C_DOM.chOrdStrikeSelect.value !== desired && Array.from(C_DOM.chOrdStrikeSelect.options).some(o => o.value === desired)) {
+    C_DOM.chOrdStrikeSelect.value = desired;
+  }
+}
+
+function applyChartOrderContract(userChanged = false) {
+  const snap = chartOrderState.snapshot;
+  if (C_DOM.chCeBtn) C_DOM.chCeBtn.classList.toggle('active', chartOrderState.optType === 'CE');
+  if (C_DOM.chPeBtn) C_DOM.chPeBtn.classList.toggle('active', chartOrderState.optType === 'PE');
+  if (!snap || !Array.isArray(snap.strikes) || snap.strikes.length === 0) return;
+
+  populateChartStrikeDropdown(snap);
+  let row = null;
+  if (!chartOrderState.useAtm && chartOrderState.selectedStrike) {
+    row = snap.strikes.find(r => Number(r.strike) === Number(chartOrderState.selectedStrike));
+  }
+  if (!row) {
+    row = snap.strikes.find(r => r.isAtm || r.strike === snap.atmStrike) ||
+      snap.strikes[Math.floor(snap.strikes.length / 2)];
+  }
+  const leg = row ? (chartOrderState.optType === 'PE' ? row.pe : row.ce) : null;
+  if (!leg) return;
+
+  const prevSym = (C_DOM.chOrdSymbol && C_DOM.chOrdSymbol.value) || '';
+  const symChanged = Boolean(leg.symbol && prevSym !== leg.symbol);
+  if (C_DOM.chOrdSymbol) C_DOM.chOrdSymbol.value = leg.symbol || '';
+  if (C_DOM.chOrdToken) C_DOM.chOrdToken.value = leg.instrumentToken || '';
+  if (C_DOM.chOrdSymbolLabel) C_DOM.chOrdSymbolLabel.textContent = leg.symbol || '--';
+  if (Number(leg.ltp) > 0) chartOrderState.ltp = Number(leg.ltp);
+  if (C_DOM.chOrdLtpLabel) {
+    C_DOM.chOrdLtpLabel.textContent = chartOrderState.ltp > 0 ? `₹${chartOrderState.ltp.toFixed(2)}` : '--';
+  }
+  if (userChanged || symChanged) {
+    chartOrderState.limitEdited = false;
+    chartOrderState.triggerEdited = false;
+    syncChartOrderPricingUI(true);
+    recalcChartOrderQty();
+  } else if (C_DOM.chOrdType && C_DOM.chOrdType.value === 'MKT' && C_DOM.chartOrderModal && C_DOM.chartOrderModal.classList.contains('active')) {
+    recalcChartOrderQty();
+  }
+}
+
+function updateChartOrderSnapshot(snapshot) {
+  if (!snapshot) return;
+  chartOrderState.snapshot = snapshot;
+  applyChartOrderContract(false);
+}
+
+function syncChartOrderPricingUI(forceDefaults = false) {
+  const ot = C_DOM.chOrdType ? C_DOM.chOrdType.value : 'MKT';
+  const side = (C_DOM.chOrdSide && C_DOM.chOrdSide.value) || 'B';
+  const ltp = Number(chartOrderState.ltp || 0);
+
+  if (C_DOM.submitChartOrderBtn) {
+    C_DOM.submitChartOrderBtn.className = side === 'S' ? 'btn-primary btn-sell' : 'btn-primary btn-buy';
+    C_DOM.submitChartOrderBtn.textContent = side === 'S' ? 'Place SELL Order' : 'Place BUY Order';
+  }
+
+  if (ot === 'MKT') {
+    if (C_DOM.chOrdPricingRow) C_DOM.chOrdPricingRow.style.display = 'none';
+    if (C_DOM.chOrdTriggerGroup) C_DOM.chOrdTriggerGroup.style.display = 'none';
+    return;
+  }
+  if (C_DOM.chOrdPricingRow) C_DOM.chOrdPricingRow.style.display = 'grid';
+
+  if (ot === 'SL') {
+    if (C_DOM.chOrdTriggerGroup) C_DOM.chOrdTriggerGroup.style.display = 'block';
+    if (C_DOM.chOrdPriceLabel) C_DOM.chOrdPriceLabel.textContent = 'SL Limit Price (₹)';
+    if (C_DOM.chOrdPriceHint) {
+      C_DOM.chOrdPriceHint.textContent = side === 'S' ? 'Default = Trigger - 0.50 (Sell)' : 'Default = Trigger + 0.50 (Buy)';
+    }
+    if (forceDefaults) {
+      if (C_DOM.chOrdTriggerPrice && !chartOrderState.triggerEdited && ltp > 0) {
+        C_DOM.chOrdTriggerPrice.value = roundChTick(ltp).toFixed(2);
+      }
+      const trig = Number((C_DOM.chOrdTriggerPrice && C_DOM.chOrdTriggerPrice.value) || ltp || 0);
+      if (C_DOM.chOrdPrice && !chartOrderState.limitEdited && trig > 0) {
+        C_DOM.chOrdPrice.value = defaultChLimitPrice(trig, side).toFixed(2);
+      }
+    }
+    return;
+  }
+
+  if (C_DOM.chOrdTriggerGroup) C_DOM.chOrdTriggerGroup.style.display = 'none';
+  if (C_DOM.chOrdPriceLabel) C_DOM.chOrdPriceLabel.textContent = 'Limit Price (₹)';
+  if (C_DOM.chOrdPriceHint) {
+    C_DOM.chOrdPriceHint.textContent = side === 'S' ? 'Default = LTP - 0.50 (Sell)' : 'Default = LTP + 0.50 (Buy)';
+  }
+  if (forceDefaults && C_DOM.chOrdPrice && !chartOrderState.limitEdited && ltp > 0) {
+    C_DOM.chOrdPrice.value = defaultChLimitPrice(ltp, side).toFixed(2);
+  }
+}
+
+function updateChartOrderSizingHint() {
+  if (!C_DOM.chSizingHint) return;
+  const qty = Math.round(Number((C_DOM.chOrdQty && C_DOM.chOrdQty.value) || 0));
+  const fq = Number(chartOrderState.freezeQty || 0);
+  const lot = Number(chartOrderState.lotSize || 65);
+  const rate = Number(chartOrderState.rate || 0);
+  const maxSlice = fq > 0 ? Math.max(lot, Math.floor(fq / lot) * lot) : 0;
+  const sliceCount = (fq > 0 && qty > fq) ? Math.ceil(qty / maxSlice) : (qty > 0 ? 1 : 0);
+  const splitNote = sliceCount > 1 ? ` • Auto-splits into ${sliceCount} orders (max ${maxSlice}/order)` : '';
+  const insNote = (C_DOM.chAutoQty && C_DOM.chAutoQty.checked && rate > 0 && qty === 0)
+    ? ` • Need ₹${(lot * rate).toFixed(2)} for 1 lot`
+    : '';
+  const rateNote = rate > 0 ? `Rate: ₹${rate.toFixed(2)} | ` : '';
+  if (chartOrderState.routingMode === 'all_funded' && Array.isArray(chartOrderState.eligibleBrokers)) {
+    const elig = chartOrderState.eligibleBrokers;
+    const skip = chartOrderState.skippedBrokers || [];
+    const eligTxt = elig.length > 0 ? elig.map(b => `${b.name}: ${b.quantity}`).join(', ') : 'None';
+    C_DOM.chSizingHint.textContent = `All Funded (${elig.length}/${elig.length + skip.length}): ${eligTxt} | ${rateNote}Lot: ${lot}`;
+    return;
+  }
+  C_DOM.chSizingHint.textContent = `${rateNote}Lot: ${lot} | Freeze: ${fq > 0 ? fq : 'None'}${splitNote}${insNote}`;
+}
+
+async function recalcChartOrderQty() {
+  const seq = ++chartOrderState.sizingSeq;
+  try {
+    const symbol = (C_DOM.chOrdSymbol && C_DOM.chOrdSymbol.value) || '';
+    const accountId = (C_DOM.chOrdBroker && C_DOM.chOrdBroker.value) || '';
+    if (!symbol || !accountId) return;
+    const ot = C_DOM.chOrdType ? C_DOM.chOrdType.value : 'MKT';
+    const side = (C_DOM.chOrdSide && C_DOM.chOrdSide.value) || 'B';
+    const price = ot === 'MKT' ? 0 : Number((C_DOM.chOrdPrice && C_DOM.chOrdPrice.value) || 0);
+    const triggerPrice = ot === 'SL' && C_DOM.chOrdTriggerPrice ? Number(C_DOM.chOrdTriggerPrice.value || 0) : 0;
+    const routingMode = (C_DOM.chOrdRoutingMode && C_DOM.chOrdRoutingMode.value) || 'selected';
+
+    const res = await fetch('/api/orders/calculate-quantity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId,
+        routingMode,
+        tradingSymbol: symbol,
+        instrumentToken: C_DOM.chOrdToken ? C_DOM.chOrdToken.value : '',
+        exchangeSegment: 'NFO',
+        orderType: ot,
+        transactionType: side,
+        lotSize: chartOrderState.lotSize,
+        price,
+        triggerPrice,
+        ltp: Number(chartOrderState.ltp || 0)
+      })
+    });
+    const d = await res.json();
+    if (seq !== chartOrderState.sizingSeq) return;
+    if (d.success && d.data) {
+      chartOrderState.lotSize = d.data.lotSize || 65;
+      chartOrderState.freezeQty = d.data.freezeQty || 0;
+      chartOrderState.availableCash = d.data.availableCash || 0;
+      chartOrderState.rate = Number(d.data.price || 0);
+      chartOrderState.routingMode = d.data.routingMode || routingMode;
+      chartOrderState.eligibleBrokers = d.data.eligibleBrokers || [];
+      chartOrderState.skippedBrokers = d.data.skippedBrokers || [];
+      if (C_DOM.chOrdBalanceLabel) {
+        C_DOM.chOrdBalanceLabel.textContent = `₹${Number(chartOrderState.availableCash).toLocaleString('en-IN')}`;
+      }
+      if (C_DOM.chOrdQtyLabel) {
+        C_DOM.chOrdQtyLabel.textContent = `Quantity (Lot Size = ${chartOrderState.lotSize})`;
+      }
+      if (C_DOM.chOrdQty) {
+        C_DOM.chOrdQty.min = chartOrderState.lotSize;
+        C_DOM.chOrdQty.step = chartOrderState.lotSize;
+        if (C_DOM.chAutoQty && C_DOM.chAutoQty.checked) {
+          C_DOM.chOrdQty.value = Math.max(0, Number(d.data.quantity || 0));
+        }
+      }
+      updateChartOrderSizingHint();
+    }
+  } catch (e) {}
+}
+
+if (C_DOM.openChartOrderBtn) {
+  C_DOM.openChartOrderBtn.addEventListener('click', async () => {
+    await loadChartOrderAccounts();
+    applyChartOrderContract(true);
+    syncChartOrderPricingUI(true);
+    if (C_DOM.chartOrderModal) C_DOM.chartOrderModal.classList.add('active');
+    recalcChartOrderQty();
+  });
+}
+if (C_DOM.closeChartOrderModal) {
+  C_DOM.closeChartOrderModal.addEventListener('click', () => C_DOM.chartOrderModal.classList.remove('active'));
+}
+if (C_DOM.cancelChartOrderBtn) {
+  C_DOM.cancelChartOrderBtn.addEventListener('click', () => C_DOM.chartOrderModal.classList.remove('active'));
+}
+if (C_DOM.chCeBtn) {
+  C_DOM.chCeBtn.addEventListener('click', () => {
+    chartOrderState.optType = 'CE';
+    applyChartOrderContract(true);
+  });
+}
+if (C_DOM.chPeBtn) {
+  C_DOM.chPeBtn.addEventListener('click', () => {
+    chartOrderState.optType = 'PE';
+    applyChartOrderContract(true);
+  });
+}
+if (C_DOM.chResetAtmBtn) {
+  C_DOM.chResetAtmBtn.addEventListener('click', () => {
+    chartOrderState.useAtm = true;
+    chartOrderState.selectedStrike = null;
+    applyChartOrderContract(true);
+  });
+}
+if (C_DOM.chOrdStrikeSelect) {
+  C_DOM.chOrdStrikeSelect.addEventListener('change', () => {
+    const val = Number(C_DOM.chOrdStrikeSelect.value || 0);
+    if (val > 0) {
+      chartOrderState.useAtm = false;
+      chartOrderState.selectedStrike = val;
+      applyChartOrderContract(true);
+    }
+  });
+}
+if (C_DOM.chOrdSide) {
+  C_DOM.chOrdSide.addEventListener('change', () => {
+    chartOrderState.limitEdited = false;
+    syncChartOrderPricingUI(true);
+    recalcChartOrderQty();
+  });
+}
+if (C_DOM.chOrdType) {
+  C_DOM.chOrdType.addEventListener('change', () => {
+    chartOrderState.limitEdited = false;
+    chartOrderState.triggerEdited = false;
+    syncChartOrderPricingUI(true);
+    recalcChartOrderQty();
+  });
+}
+if (C_DOM.chOrdTriggerPrice) {
+  C_DOM.chOrdTriggerPrice.addEventListener('input', () => {
+    chartOrderState.triggerEdited = true;
+    const trig = Number(C_DOM.chOrdTriggerPrice.value || 0);
+    if (C_DOM.chOrdType && C_DOM.chOrdType.value === 'SL' && trig > 0 && !chartOrderState.limitEdited) {
+      C_DOM.chOrdPrice.value = defaultChLimitPrice(trig, C_DOM.chOrdSide.value).toFixed(2);
+    }
+    recalcChartOrderQty();
+  });
+}
+if (C_DOM.chOrdPrice) {
+  C_DOM.chOrdPrice.addEventListener('input', () => {
+    chartOrderState.limitEdited = true;
+    recalcChartOrderQty();
+  });
+}
+if (C_DOM.chOrdBroker) {
+  C_DOM.chOrdBroker.addEventListener('change', () => {
+    try { localStorage.setItem('algo_selected_order_broker', C_DOM.chOrdBroker.value || ''); } catch (e) {}
+    recalcChartOrderQty();
+  });
+}
+if (C_DOM.chOrdRoutingMode) {
+  C_DOM.chOrdRoutingMode.addEventListener('change', () => {
+    try { localStorage.setItem('algo_order_routing_mode', C_DOM.chOrdRoutingMode.value || 'selected'); } catch (e) {}
+    recalcChartOrderQty();
+  });
+}
+if (C_DOM.chAutoQty) {
+  C_DOM.chAutoQty.addEventListener('change', recalcChartOrderQty);
+}
+if (C_DOM.chOrdQty) {
+  C_DOM.chOrdQty.addEventListener('input', () => {
+    if (C_DOM.chAutoQty) C_DOM.chAutoQty.checked = false;
+    updateChartOrderSizingHint();
+  });
+}
+if (C_DOM.chartOrderForm) {
+  C_DOM.chartOrderForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const ot = C_DOM.chOrdType.value;
+    const payload = {
+      accountId: C_DOM.chOrdBroker.value,
+      routingMode: (C_DOM.chOrdRoutingMode && C_DOM.chOrdRoutingMode.value) || 'selected',
+      tradingSymbol: C_DOM.chOrdSymbol.value,
+      instrumentToken: C_DOM.chOrdToken ? C_DOM.chOrdToken.value : '',
+      exchangeSegment: 'nse_fo',
+      transactionType: C_DOM.chOrdSide.value,
+      product: C_DOM.chOrdProduct.value,
+      orderType: ot,
+      quantity: Number(C_DOM.chOrdQty.value),
+      autoQuantity: Boolean(C_DOM.chAutoQty && C_DOM.chAutoQty.checked),
+      lotSize: chartOrderState.lotSize,
+      freezeQty: chartOrderState.freezeQty,
+      price: ot === 'MKT' ? 0 : Number(C_DOM.chOrdPrice.value || 0),
+      triggerPrice: ot === 'SL' && C_DOM.chOrdTriggerPrice ? Number(C_DOM.chOrdTriggerPrice.value || 0) : 0,
+      ltp: chartOrderState.ltp
+    };
+    C_DOM.submitChartOrderBtn.disabled = true;
+    try {
+      const res = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const d = await res.json();
+      if (d.success) {
+        const msg = d.routingMode === 'all_funded'
+          ? `Executed on ${d.executedCount} funded broker(s): ${(d.executedBrokers || []).map(b => `${b.name} (${b.quantity})`).join(', ')}`
+          : (d.sliced
+            ? `Order split into ${d.sliceCount} orders (Freeze ${d.freezeQty}): ${payload.transactionType === 'B' ? 'BUY' : 'SELL'} ${payload.tradingSymbol} x ${d.totalQuantity}`
+            : `Order placed: ${payload.transactionType === 'B' ? 'BUY' : 'SELL'} ${payload.tradingSymbol} x ${d.totalQuantity || payload.quantity}`);
+        showToast(msg, 'success');
+        C_DOM.chartOrderModal.classList.remove('active');
+      } else {
+        showToast(d.message || 'Order failed', 'error');
+      }
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      C_DOM.submitChartOrderBtn.disabled = false;
+    }
+  });
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   initChartRenderer();
   loadNiftySpotSnapshot();
   loadInitialChart();
+  loadChartOrderAccounts();
   initEventSource();
 });

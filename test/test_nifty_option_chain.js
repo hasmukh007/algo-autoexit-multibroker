@@ -1549,6 +1549,11 @@ async function run() {
     assert(chartPageRes.body.includes('data-tf="5m_ha"'));
     assert(chartPageRes.body.includes('data-tf="15m_ha"'));
     assert(chartPageRes.body.includes('data-tf="1h_ha"'));
+    assert(chartPageRes.body.includes('openChartOrderBtn') && chartPageRes.body.includes('chartOrderModal'), 'Chart page must expose Place Order button & modal');
+    assert(chartPageRes.body.includes('candleCountdownDisplay') && chartPageRes.body.includes('candleBarCountdown'), 'Chart page must show candle countdown');
+    const chartJsRes = await httpRequest(testPort, '/chart.js');
+    assert.strictEqual(chartJsRes.status, 200);
+    assert(chartJsRes.body.includes('updateCandleCountdown') && chartJsRes.body.includes('updateLivePriceLineWithCountdown') && chartJsRes.body.includes('recalcChartOrderQty'), 'chart.js must implement candle countdown on price line and quick order modal');
     console.log('   ✅ GET /chart serves live NIFTY chart page with Session Line, 5m/15m/1h HA S/R, Pivots, and PDH/PDL.');
 
     const chartApiRes = await httpRequest(testPort, '/api/nifty-chart');
