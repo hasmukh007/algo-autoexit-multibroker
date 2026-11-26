@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,8 +8,11 @@
   <link rel="stylesheet" href="styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
 </head>
+
 <body>
   <div class="app-container">
     <!-- LIVE NIFTY 50 TOP BAR -->
@@ -82,7 +86,8 @@
       </div>
 
       <div class="nav-right">
-        <button class="btn-outline btn-sm" id="recenterAtmBtn" title="Recenter 10 ITM + ATM + 10 OTM strikes around current NIFTY Spot">
+        <button class="btn-outline btn-sm" id="recenterAtmBtn"
+          title="Recenter 10 ITM + ATM + 10 OTM strikes around current NIFTY Spot">
           Recenter ATM
         </button>
         <button class="btn-primary btn-sm" id="toggleFeedBtn">
@@ -151,7 +156,8 @@
     <section class="oc-controls-bar">
       <div class="oc-filter-group">
         <span class="oc-control-label">View Range:</span>
-        <button class="btn-xs btn-outline oc-filter-btn active" data-range="all">All 21 Strikes (10 ITM + ATM + 10 OTM)</button>
+        <button class="btn-xs btn-outline oc-filter-btn active" data-range="all">All 21 Strikes (10 ITM + ATM + 10
+          OTM)</button>
         <button class="btn-xs btn-outline oc-filter-btn" data-range="5">ATM &plusmn; 5 Strikes</button>
       </div>
       <div class="oc-legend">
@@ -211,6 +217,7 @@
       <div class="modal-body">
         <form id="ocOrderForm">
           <input type="hidden" id="ocOrdSymbol">
+          <input type="hidden" id="ocOrdToken">
           <input type="hidden" id="ocOrdSide">
           <div class="modal-pos-summary" style="grid-template-columns: repeat(2, 1fr);">
             <div>Contract: <strong id="ocOrdSymbolLabel">--</strong></div>
@@ -233,8 +240,8 @@
 
           <div class="form-row two-col">
             <div class="form-group">
-              <label for="ocOrdQty">Quantity (NIFTY Lot = 75)</label>
-              <input type="number" id="ocOrdQty" value="75" min="1" step="1" required>
+              <label for="ocOrdQty" id="ocOrdQtyLabel">Quantity (NIFTY Lot = 65)</label>
+              <input type="number" id="ocOrdQty" value="65" min="65" step="65" required>
             </div>
             <div class="form-group">
               <label for="ocOrdType">Order Type</label>
@@ -262,4 +269,5 @@
   <div class="toast-container" id="toastContainer"></div>
   <script src="option-chain.js"></script>
 </body>
+
 </html>

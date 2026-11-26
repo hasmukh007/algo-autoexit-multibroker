@@ -53,7 +53,9 @@ const OC_DOM = {
   ocOrderModalTitle: document.getElementById('ocOrderModalTitle'),
   ocOrderForm: document.getElementById('ocOrderForm'),
   ocOrdSymbol: document.getElementById('ocOrdSymbol'),
+  ocOrdToken: document.getElementById('ocOrdToken'),
   ocOrdSide: document.getElementById('ocOrdSide'),
+  ocOrdQtyLabel: document.getElementById('ocOrdQtyLabel'),
   ocOrdSymbolLabel: document.getElementById('ocOrdSymbolLabel'),
   ocOrdLtpLabel: document.getElementById('ocOrdLtpLabel'),
   ocOrdBroker: document.getElementById('ocOrdBroker'),
@@ -313,8 +315,8 @@ function renderOptionChainTable(snapshot) {
           <td class="text-right mono oc-ltp-cell ${ceItmClass}" id="ce-ltp-${row.strike}">${formatPrice(ce.ltp)}</td>
           <td class="text-center ${ceItmClass}">
             <div class="oc-trade-btns">
-              <button class="btn-oc-buy" data-symbol="${ce.symbol}" data-side="B" data-ltp="${ce.ltp || 0}" title="Buy ${ce.symbol}">B</button>
-              <button class="btn-oc-sell" data-symbol="${ce.symbol}" data-side="S" data-ltp="${ce.ltp || 0}" title="Sell ${ce.symbol}">S</button>
+              <button class="btn-oc-buy" id="ce-buy-${row.strike}" data-symbol="${ce.symbol}" data-token="${ce.instrumentToken || ''}" data-lot-size="${ce.lotSize || 65}" data-side="B" data-ltp="${ce.ltp || 0}" title="Buy ${ce.symbol}">B</button>
+              <button class="btn-oc-sell" id="ce-sell-${row.strike}" data-symbol="${ce.symbol}" data-token="${ce.instrumentToken || ''}" data-lot-size="${ce.lotSize || 65}" data-side="S" data-ltp="${ce.ltp || 0}" title="Sell ${ce.symbol}">S</button>
             </div>
           </td>
 
@@ -325,8 +327,8 @@ function renderOptionChainTable(snapshot) {
 
           <td class="text-center ${peItmClass}">
             <div class="oc-trade-btns">
-              <button class="btn-oc-buy" data-symbol="${pe.symbol}" data-side="B" data-ltp="${pe.ltp || 0}" title="Buy ${pe.symbol}">B</button>
-              <button class="btn-oc-sell" data-symbol="${pe.symbol}" data-side="S" data-ltp="${pe.ltp || 0}" title="Sell ${pe.symbol}">S</button>
+              <button class="btn-oc-buy" id="pe-buy-${row.strike}" data-symbol="${pe.symbol}" data-token="${pe.instrumentToken || ''}" data-lot-size="${pe.lotSize || 65}" data-side="B" data-ltp="${pe.ltp || 0}" title="Buy ${pe.symbol}">B</button>
+              <button class="btn-oc-sell" id="pe-sell-${row.strike}" data-symbol="${pe.symbol}" data-token="${pe.instrumentToken || ''}" data-lot-size="${pe.lotSize || 65}" data-side="S" data-ltp="${pe.ltp || 0}" title="Sell ${pe.symbol}">S</button>
             </div>
           </td>
           <td class="text-right mono oc-ltp-cell ${peItmClass}" id="pe-ltp-${row.strike}">${formatPrice(pe.ltp)}</td>
@@ -403,11 +405,14 @@ function patchLegCells(strike, prefix, leg, maxOi) {
   if (oiEl) oiEl.textContent = formatCompactNumber(leg.oi);
   if (oiBarEl) oiBarEl.style.width = `${leg.oi ? Math.min(100, (leg.oi / maxOi) * 100).toFixed(1) : 0}%`;
 
-  const rowEl = ltpEl.closest('tr');
-  if (rowEl) {
-    rowEl.querySelectorAll(`button[data-symbol="${leg.symbol}"]`).forEach(btn => {
+  for (const kind of ['buy', 'sell']) {
+    const btn = document.getElementById(`${prefix}-${kind}-${strike}`);
+    if (btn) {
+      btn.setAttribute('data-symbol', leg.symbol || '');
+      btn.setAttribute('data-token', leg.instrumentToken || '');
+      btn.setAttribute('data-lot-size', String(leg.lotSize || 65));
       btn.setAttribute('data-ltp', String(leg.ltp || 0));
-    });
+    }
   }
 }
 
@@ -525,14 +530,25 @@ OC_DOM.optionChainBody.addEventListener('click', e => {
   const btn = e.target.closest('.btn-oc-buy, .btn-oc-sell');
   if (!btn) return;
   const symbol = btn.getAttribute('data-symbol');
+  const token = btn.getAttribute('data-token') || '';
+  const lotSize = Number(btn.getAttribute('data-lot-size') || 65) || 65;
   const side = btn.getAttribute('data-side');
   const ltp = Number(btn.getAttribute('data-ltp') || 0);
 
   OC_DOM.ocOrdSymbol.value = symbol;
+  if (OC_DOM.ocOrdToken) OC_DOM.ocOrdToken.value = token;
   OC_DOM.ocOrdSide.value = side;
   OC_DOM.ocOrdSymbolLabel.textContent = symbol;
   OC_DOM.ocOrdLtpLabel.textContent = `₹${ltp.toFixed(2)}`;
   OC_DOM.ocOrdPrice.value = ltp.toFixed(2);
+  if (OC_DOM.ocOrdQty) {
+    OC_DOM.ocOrdQty.value = lotSize;
+    OC_DOM.ocOrdQty.min = lotSize;
+    OC_DOM.ocOrdQty.step = lotSize;
+  }
+  if (OC_DOM.ocOrdQtyLabel) {
+    OC_DOM.ocOrdQtyLabel.textContent = `Quantity (Lot Size = ${lotSize})`;
+  }
   OC_DOM.ocOrderModalTitle.textContent = `${side === 'B' ? 'BUY' : 'SELL'} Option: ${symbol}`;
   OC_DOM.submitOcOrderBtn.className = side === 'B' ? 'btn-primary btn-buy' : 'btn-primary btn-sell';
   OC_DOM.submitOcOrderBtn.textContent = `Place ${side === 'B' ? 'BUY' : 'SELL'} Order`;
@@ -551,6 +567,7 @@ OC_DOM.ocOrderForm.addEventListener('submit', async e => {
   const payload = {
     accountId: OC_DOM.ocOrdBroker.value,
     tradingSymbol: OC_DOM.ocOrdSymbol.value,
+    instrumentToken: OC_DOM.ocOrdToken ? OC_DOM.ocOrdToken.value : '',
     exchangeSegment: 'nse_fo',
     transactionType: OC_DOM.ocOrdSide.value,
     product: OC_DOM.ocOrdProduct.value,

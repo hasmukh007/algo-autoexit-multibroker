@@ -7,6 +7,7 @@ const path = require('path');
 const { NiftyFeedManager, computeAtmStrike, computeOiBuildup } = require('../lib/niftyFeedManager');
 const { NiftyCandleManager, aggregateTo3MinuteCandles } = require('../lib/niftyCandleManager');
 const {
+  isISTTradingHours,
   getSessionBoundaries,
   aggregateToSessionTimeframe,
   calculateHeikinAshi,
@@ -711,8 +712,8 @@ async function run() {
       return {
         broker: 'angelone',
         candles: [
-          { time: baseSec - 360, open: 24450, high: 24470, low: 24440, close: 24465, volume: 200, source: 'rest' },
-          { time: baseSec - 180, open: 24465, high: 24490, low: 24460, close: 24485, volume: 250, source: 'rest' }
+          { time: baseSec - 86400, open: 24450, high: 24470, low: 24440, close: 24465, volume: 200, source: 'rest' },
+          { time: baseSec - 86400 + 180, open: 24465, high: 24490, low: 24460, close: 24485, volume: 250, source: 'rest' }
         ]
       };
     }
@@ -730,7 +731,19 @@ async function run() {
     assert.strictEqual(bf2.backfilled, false);
     assert.strictEqual(backfillCalls, 1);
 
-    // Live WebSocket ticks generate and update 3-minute candles
+    // Off-hours / weekend ticks must NOT create candles
+    const off0859Ms = makeISTDate(2026, 11, 26, 8, 59).getTime();
+    const off1530Ms = makeISTDate(2026, 11, 26, 15, 30).getTime();
+    const offSatMs = makeISTDate(2026, 11, 28, 11, 0).getTime();
+    assert.strictEqual(isISTTradingHours(Math.floor(off0859Ms / 1000)), false);
+    assert.strictEqual(isISTTradingHours(Math.floor(off1530Ms / 1000)), false);
+    assert.strictEqual(isISTTradingHours(Math.floor(offSatMs / 1000)), false);
+    assert.strictEqual(isISTTradingHours(baseSec), true);
+    assert.strictEqual(candleMgr.onSpotTick(24500, off0859Ms), null, 'Pre-market tick before 09:15 IST must NOT build candle');
+    assert.strictEqual(candleMgr.onSpotTick(24500, off1530Ms), null, 'Post-market tick at 15:30 IST must NOT build candle');
+    assert.strictEqual(candleMgr.onSpotTick(24500, offSatMs), null, 'Weekend tick must NOT build candle');
+
+    // Live WebSocket ticks generate and update 3-minute candles during trading hours
     const c1 = candleMgr.onSpotTick(24500, baseSec * 1000 + 10000);
     const c2 = candleMgr.onSpotTick(24525, baseSec * 1000 + 70000);
     const c3 = candleMgr.onSpotTick(24492, baseSec * 1000 + 120000);
@@ -750,7 +763,7 @@ async function run() {
     assert.strictEqual(loaded.length, 4);
     assert.strictEqual(loaded[2].high, 24525);
     assert.strictEqual(loaded[3].open, 24530);
-    console.log('   ✅ NiftyCandleManager persists 3m candles in SQLite, aggregates WS ticks, and backfills 3d REST history when empty.');
+    console.log('   ✅ NiftyCandleManager builds candles strictly in IST trading hours (09:15-15:29 Mon-Fri), persists in SQLite, and backfills 3d REST history.');
   } finally {
     candleMgr.close();
     for (const suffix of ['', '-wal', '-shm']) {
@@ -1144,8 +1157,9 @@ async function run() {
     assert.strictEqual(ocRes.status, 200);
     assert(ocRes.body.includes('optionChainTable'));
     assert(ocRes.body.includes('<th>OI Built Up</th>'));
+    assert(ocRes.body.includes('NIFTY Lot = 65'), 'Option chain modal must default to NIFTY lot size 65');
     assert(!ocRes.body.includes('<th>Side</th>'));
-    console.log('   ✅ GET /option-chain serves live-only Option Chain page with OI Built Up column.');
+    console.log('   ✅ GET /option-chain serves live-only Option Chain page with OI Built Up & NIFTY Lot = 65.');
 
     const chartPageRes = await httpRequest(testPort, '/chart');
     assert.strictEqual(chartPageRes.status, 200);

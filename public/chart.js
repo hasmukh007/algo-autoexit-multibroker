@@ -10,6 +10,18 @@
 
 const IST_OFFSET_SEC = 19800;
 const NSE_SESSION_START_SEC = 9 * 3600 + 15 * 60;
+const NSE_OPEN_MIN = 9 * 60 + 15;
+const NSE_CLOSE_MIN = 15 * 60 + 30;
+
+function isISTTradingHours(epochSec) {
+  const t = Math.floor(Number(epochSec));
+  if (!Number.isFinite(t) || t <= 0) return false;
+  const d = new Date((t + IST_OFFSET_SEC) * 1000);
+  const day = d.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+  return mins >= NSE_OPEN_MIN && mins < NSE_CLOSE_MIN;
+}
 
 const chartState = {
   candles: [],
@@ -129,7 +141,7 @@ function aggregateToSessionTimeframe(candles = [], minutes = 5) {
     const low = Number(c.low);
     const close = Number(c.close);
     const volume = Number(c.volume || 0);
-    if (!Number.isFinite(t) || !Number.isFinite(open) || !Number.isFinite(close) || close <= 0) continue;
+    if (!isISTTradingHours(t) || !Number.isFinite(open) || !Number.isFinite(close) || close <= 0) continue;
 
     const istSec = t + IST_OFFSET_SEC;
     const istDayStart = Math.floor(istSec / 86400) * 86400;
@@ -934,15 +946,15 @@ function renderActiveTimeframeSeries(fitContent = true) {
 }
 
 function setAllCandles(candles, candles1m = null) {
-  chartState.candles = Array.isArray(candles) ? candles : [];
+  chartState.candles = Array.isArray(candles) ? candles.filter(c => isISTTradingHours(c.time)) : [];
   if (Array.isArray(candles1m)) {
-    chartState.candles1m = candles1m;
+    chartState.candles1m = candles1m.filter(c => isISTTradingHours(c.time));
   }
   renderActiveTimeframeSeries(true);
 }
 
 function applyLiveCandle(candle, candle1m = null) {
-  if (!candle) return;
+  if (!candle || !isISTTradingHours(candle.time)) return;
   const list = chartState.candles;
   const last = list[list.length - 1];
   if (last && last.time === candle.time) {
