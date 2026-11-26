@@ -231,11 +231,25 @@
               <select id="ocOrdBroker" required></select>
             </div>
             <div class="form-group">
+              <label for="ocOrdRoutingMode">Place Order On</label>
+              <select id="ocOrdRoutingMode">
+                <option value="selected" selected>Selected Broker Only</option>
+                <option value="all_funded">All Brokers w/ Enough Funds</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row two-col">
+            <div class="form-group">
               <label for="ocOrdProduct">Product</label>
               <select id="ocOrdProduct">
                 <option value="MIS" selected>MIS (Intraday)</option>
                 <option value="NRML">NRML (Overnight)</option>
               </select>
+            </div>
+            <div class="form-group">
+              <label>Order Status / Cap</label>
+              <div class="input-hint mono" id="ocDayCapHint" style="padding: 8px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">Using global day settings</div>
             </div>
           </div>
 

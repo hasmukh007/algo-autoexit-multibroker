@@ -155,11 +155,20 @@
         </div>
       </div>
 
-      <!-- Quick Net Profit % Auto-Exit Rule Bar on Page -->
+      <!-- Quick Order, Capital %, Max Orders & Net Profit % Controls Bar on Top -->
       <div class="banner-right">
         <div class="auto-exit-quick-controls">
           <div class="quick-ctrl-group">
-            <label for="quickTargetPct">Target Net Profit (%):</label>
+            <label for="quickCapitalDeployPct">Deploy Capital / Day (%):</label>
+            <div class="input-with-addon">
+              <input type="number" id="quickCapitalDeployPct" step="5" value="100" min="1" max="100">
+              <span class="addon">%</span>
+            </div>
+            <span class="hint-calc" id="quickDeployInrHint">100% of funds</span>
+          </div>
+
+          <div class="quick-ctrl-group">
+            <label for="quickTargetPct">Net Profit Target (% After Charges):</label>
             <div class="input-with-addon">
               <input type="number" id="quickTargetPct" step="0.1" value="1.5" min="0.1" max="100">
               <span class="addon">%</span>
@@ -177,7 +186,7 @@
           </div>
 
           <div class="quick-ctrl-group">
-            <label for="quickStopLossPct">Net Stop Loss (%):</label>
+            <label for="quickStopLossPct">Max Loss for Day (%):</label>
             <div class="input-with-addon">
               <input type="number" id="quickStopLossPct" step="0.1" value="1.0" min="0.1" max="50">
               <span class="addon">%</span>
@@ -185,9 +194,24 @@
             <span class="hint-calc" id="quickStopInrHint">= -₹5,000 Net</span>
           </div>
 
+          <div class="quick-ctrl-group">
+            <label for="quickMaxOrders">Max Orders / Day:</label>
+            <input type="number" id="quickMaxOrders" step="1" value="0" min="0" style="width:90px;">
+            <span class="hint-calc" id="quickOrdersHint">Today: 0 / Unlimited</span>
+          </div>
+
+          <div class="quick-ctrl-group">
+            <label for="quickRoutingMode">Place Order On:</label>
+            <select id="quickRoutingMode" style="min-width:170px;">
+              <option value="selected" selected>Selected Broker Only</option>
+              <option value="all_funded">All Brokers w/ Funds</option>
+            </select>
+            <span class="hint-calc" id="quickRoutingHint">Single broker execution</span>
+          </div>
+
           <div class="quick-ctrl-actions">
-            <button class="btn-primary btn-sm" id="applyGlobalRuleBtn" title="Set this Net Profit % rule for all open positions">
-              Apply to Net Positions
+            <button class="btn-primary btn-sm" id="applyGlobalRuleBtn" title="Save day capital %, max orders, routing mode, and apply Net Profit % / Max Loss rules">
+              Save &amp; Apply Settings
             </button>
           </div>
         </div>
@@ -377,12 +401,21 @@
             </div>
 
             <form id="orderForm">
-              <!-- Select Broker Account -->
-              <div class="form-group" style="margin-bottom: 16px;">
-                <label for="orderBrokerSelect">Select Execution Broker Account</label>
-                <select id="orderBrokerSelect" required>
-                  <option value="">Loading accounts...</option>
-                </select>
+              <!-- Select Broker Account & Order Routing Mode -->
+              <div class="form-row two-col" style="margin-bottom: 16px;">
+                <div class="form-group">
+                  <label for="orderBrokerSelect">Select Execution Broker Account</label>
+                  <select id="orderBrokerSelect" required>
+                    <option value="">Loading accounts...</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="orderRoutingMode">Execution Target</label>
+                  <select id="orderRoutingMode">
+                    <option value="selected" selected>Selected Broker Only</option>
+                    <option value="all_funded">All Brokers Having Enough Funds</option>
+                  </select>
+                </div>
               </div>
 
               <!-- Buy / Sell Toggle -->

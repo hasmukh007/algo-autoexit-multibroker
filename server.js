@@ -24,6 +24,7 @@ const openingBalanceScheduler = new OpeningBalanceScheduler(multiBrokerManager);
 
 // Instantiate Algo Auto-Exit Engine
 const autoExitEngine = new AutoExitEngine(multiBrokerManager, openingBalanceScheduler, configManager);
+multiBrokerManager.setDailyRiskGuardProvider(() => autoExitEngine.getDailyRiskGuardStatus());
 autoExitEngine.start();
 
 // Instantiate 9:00 AM NIFTY Spot & 10 ITM + ATM + 10 OTM Option Chain Feed Manager
@@ -222,7 +223,9 @@ setInterval(async () => {
       },
       positions: enrichedPositions,
       accounts: multiBrokerManager.getAccounts(),
-      rules: autoExitEngine.getAllPositionRules()
+      rules: autoExitEngine.getAllPositionRules(),
+      riskSettings: configManager.loadConfig().riskSettings,
+      dailyOrders: multiBrokerManager.getDailyOrderStats()
     };
 
     broadcastSSE('market_tick', payload);
@@ -577,9 +580,12 @@ const server = http.createServer(async (req, res) => {
         const orderData = await parseBody(req);
         const result = await multiBrokerManager.placeOrder(orderData);
         const splitNote = result.sliced ? ` [Split into ${result.sliceCount} orders, Freeze=${result.freezeQty}]` : '';
+        const routeNote = result.routingMode === 'all_funded'
+          ? `across ${result.executedCount} funded broker(s)`
+          : 'on selected broker';
         autoExitEngine.log(
           'INFO',
-          `Order placed on broker: ${orderData.transactionType || 'B'} ${orderData.tradingSymbol} x ${result.totalQuantity}${splitNote}`,
+          `Order placed ${routeNote}: ${orderData.transactionType || 'B'} ${orderData.tradingSymbol} x ${result.totalQuantity}${splitNote}`,
           result
         );
         return sendJson(res, 200, result);
@@ -753,6 +759,7 @@ const server = http.createServer(async (req, res) => {
          ============================================================ */
       if (pathname === '/api/status' && method === 'GET') {
         const openBal = openingBalanceScheduler.getOpeningBalanceData();
+        currentConfig = configManager.loadConfig();
         return sendJson(res, 200, {
           success: true,
           mode: currentConfig.mode,
@@ -760,6 +767,7 @@ const server = http.createServer(async (req, res) => {
           openingBalance: openBal,
           accounts: multiBrokerManager.getAccounts(),
           riskSettings: currentConfig.riskSettings,
+          dailyOrders: multiBrokerManager.getDailyOrderStats(),
           autoExitRunning: autoExitEngine.isRunning
         });
       }
@@ -776,9 +784,28 @@ const server = http.createServer(async (req, res) => {
 
       if (pathname === '/api/risk-settings' && method === 'POST') {
         const body = await parseBody(req);
-        currentConfig = configManager.saveConfig({ riskSettings: body });
-        autoExitEngine.log('INFO', `Updated risk limits: Target Net Profit ${body.targetDailyNetProfitPct}%, Max Net Loss ${body.maxDailyLossNetPct}%`);
-        return sendJson(res, 200, { success: true, riskSettings: currentConfig.riskSettings });
+        const sanitized = { ...body };
+        if (sanitized.capitalDeployPct !== undefined) {
+          sanitized.capitalDeployPct = Math.max(1, Math.min(100, Number(sanitized.capitalDeployPct) || 100));
+        }
+        if (sanitized.maxDailyOrders !== undefined) {
+          sanitized.maxDailyOrders = Math.max(0, Math.round(Number(sanitized.maxDailyOrders) || 0));
+        }
+        if (sanitized.orderRoutingMode !== undefined) {
+          sanitized.orderRoutingMode = sanitized.orderRoutingMode === 'all_funded' ? 'all_funded' : 'selected';
+        }
+        currentConfig = configManager.saveConfig({ riskSettings: sanitized });
+        autoExitEngine.clearDailyBreaker();
+        const rs = currentConfig.riskSettings;
+        autoExitEngine.log(
+          'INFO',
+          `Updated day order/risk settings: Deploy ${rs.capitalDeployPct}% capital, Net Target +${rs.targetDailyNetProfitPct}% (after charges), Max Loss -${rs.maxDailyLossNetPct}%, Max Orders/Day ${rs.maxDailyOrders > 0 ? rs.maxDailyOrders : 'Unlimited'}, Routing: ${rs.orderRoutingMode === 'all_funded' ? 'All Funded Brokers' : 'Selected Broker'}`
+        );
+        return sendJson(res, 200, {
+          success: true,
+          riskSettings: rs,
+          dailyOrders: multiBrokerManager.getDailyOrderStats()
+        });
       }
 
       return sendJson(res, 404, { success: false, message: 'Endpoint not found' });

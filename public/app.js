@@ -25,7 +25,9 @@ const state = {
   previousLtps: new Map(),
   previousNiftyLtp: null,
   selectedBrokerAccountId: '',
-  brokerSelectSignature: ''
+  brokerSelectSignature: '',
+  riskSettingsInitialized: false,
+  selectedRoutingMode: ''
 };
 
 const DOM = {
@@ -62,13 +64,19 @@ const DOM = {
   syncBalanceBtn: document.getElementById('syncBalanceBtn'),
   overrideBalanceBtn: document.getElementById('overrideBalanceBtn'),
 
-  // Quick Net Profit Controls
+  // Quick Net Profit, Capital Deploy %, Max Orders & Routing Controls
+  quickCapitalDeployPct: document.getElementById('quickCapitalDeployPct'),
+  quickDeployInrHint: document.getElementById('quickDeployInrHint'),
   quickTargetPct: document.getElementById('quickTargetPct'),
   quickNearBuffer: document.getElementById('quickNearBuffer'),
   quickStopLossPct: document.getElementById('quickStopLossPct'),
   quickTargetInrHint: document.getElementById('quickTargetInrHint'),
   quickNearInrHint: document.getElementById('quickNearInrHint'),
   quickStopInrHint: document.getElementById('quickStopInrHint'),
+  quickMaxOrders: document.getElementById('quickMaxOrders'),
+  quickOrdersHint: document.getElementById('quickOrdersHint'),
+  quickRoutingMode: document.getElementById('quickRoutingMode'),
+  quickRoutingHint: document.getElementById('quickRoutingHint'),
   applyGlobalRuleBtn: document.getElementById('applyGlobalRuleBtn'),
 
   // Metrics
@@ -110,6 +118,7 @@ const DOM = {
   // Place Order Form
   orderForm: document.getElementById('orderForm'),
   orderBrokerSelect: document.getElementById('orderBrokerSelect'),
+  orderRoutingMode: document.getElementById('orderRoutingMode'),
   orderBannerSymbol: document.getElementById('orderBannerSymbol'),
   orderBannerLtp: document.getElementById('orderBannerLtp'),
   orderStrikeSelect: document.getElementById('orderStrikeSelect'),
@@ -253,26 +262,134 @@ function updateClock() {
 setInterval(updateClock, 1000);
 updateClock();
 
-// Recalculate quick hint labels based on opening balance
+// Recalculate quick hint labels based on opening balance & daily order/risk settings
 function updateQuickHints() {
   const bal = Number(state.openingBalance.openingBalance || 500000);
+  const deployPct = Math.max(1, Math.min(100, Number((DOM.quickCapitalDeployPct && DOM.quickCapitalDeployPct.value) || 100)));
   const targetPct = Number(DOM.quickTargetPct.value || 1.5);
   const nearBuf = Number(DOM.quickNearBuffer.value || 98);
   const stopPct = Number(DOM.quickStopLossPct.value || 1.0);
+  const maxOrders = Math.max(0, Math.round(Number((DOM.quickMaxOrders && DOM.quickMaxOrders.value) || 0)));
+  const routing = (DOM.quickRoutingMode && DOM.quickRoutingMode.value === 'all_funded') ? 'all_funded' : 'selected';
 
+  const deployInr = (bal * deployPct) / 100;
   const targetInr = (bal * targetPct) / 100;
   const nearInr = targetInr * (nearBuf / 100);
   const stopInr = (bal * stopPct) / 100;
 
+  if (DOM.quickDeployInrHint) {
+    DOM.quickDeployInrHint.textContent = `${deployPct}% (= ₹${deployInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })})`;
+  }
   DOM.quickTargetInrHint.textContent = `= ₹${targetInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })} Net`;
   DOM.quickNearInrHint.textContent = `≥ ₹${nearInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })} (${nearBuf}%)`;
   DOM.quickStopInrHint.textContent = `= -₹${stopInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })} Net`;
+
+  const daily = state.dailyOrders || {};
+  const usedOrders = Number(daily.ordersPlacedToday || 0);
+  if (DOM.quickOrdersHint) {
+    if (daily.riskBlocked) {
+      DOM.quickOrdersHint.textContent = `BLOCKED: ${daily.riskBlockedReason || 'Day Limit Hit'}`;
+      DOM.quickOrdersHint.style.color = 'var(--loss-color)';
+    } else {
+      DOM.quickOrdersHint.style.color = (maxOrders > 0 && usedOrders >= maxOrders) ? 'var(--loss-color)' : '';
+      DOM.quickOrdersHint.textContent = maxOrders > 0
+        ? `Today: ${usedOrders} / ${maxOrders}`
+        : `Today: ${usedOrders} / Unlimited`;
+    }
+  }
+  if (DOM.quickRoutingHint) {
+    DOM.quickRoutingHint.textContent = routing === 'all_funded'
+      ? 'All brokers w/ enough funds'
+      : 'Selected broker only';
+  }
+  if (DOM.orderRoutingMode && DOM.orderRoutingMode.value !== routing) {
+    DOM.orderRoutingMode.value = routing;
+  }
+
   DOM.targetDisplay.textContent = `${targetPct.toFixed(2)}% (₹${targetInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })})`;
   DOM.maxLossDisplay.textContent = `-${stopPct.toFixed(2)}% (-₹${stopInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })})`;
 }
-DOM.quickTargetPct.addEventListener('input', updateQuickHints);
-DOM.quickNearBuffer.addEventListener('input', updateQuickHints);
-DOM.quickStopLossPct.addEventListener('input', updateQuickHints);
+
+function applyRoutingModeSelection(mode, persistToServer = true) {
+  const normalized = mode === 'all_funded' ? 'all_funded' : 'selected';
+  state.selectedRoutingMode = normalized;
+  if (!state.riskSettings) state.riskSettings = {};
+  state.riskSettings.orderRoutingMode = normalized;
+  try { localStorage.setItem('algo_order_routing_mode', normalized); } catch (e) {}
+  if (DOM.quickRoutingMode && DOM.quickRoutingMode.value !== normalized) {
+    DOM.quickRoutingMode.value = normalized;
+  }
+  if (DOM.orderRoutingMode && DOM.orderRoutingMode.value !== normalized) {
+    DOM.orderRoutingMode.value = normalized;
+  }
+  updateQuickHints();
+  if (typeof refreshOrderSizingFromBalance === 'function') refreshOrderSizingFromBalance();
+  if (persistToServer) {
+    fetch('/api/risk-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderRoutingMode: normalized })
+    }).catch(() => {});
+  }
+}
+
+function syncRiskSettingsToUI(risk = {}, dailyOrders = null, forceApply = false) {
+  if (dailyOrders) state.dailyOrders = dailyOrders;
+  if (!risk || typeof risk !== 'object') {
+    updateQuickHints();
+    return;
+  }
+  if (state.riskSettingsInitialized && !forceApply) {
+    // Only refresh live daily counts/status from SSE ticks; never overwrite user-edited inputs or Execution Target
+    updateQuickHints();
+    return;
+  }
+  state.riskSettingsInitialized = true;
+  state.riskSettings = { ...risk };
+  if (DOM.quickCapitalDeployPct && risk.capitalDeployPct !== undefined) {
+    DOM.quickCapitalDeployPct.value = risk.capitalDeployPct;
+  }
+  if (DOM.quickTargetPct && risk.targetDailyNetProfitPct !== undefined) {
+    DOM.quickTargetPct.value = risk.targetDailyNetProfitPct;
+  }
+  if (DOM.quickNearBuffer && risk.nearThresholdBufferPct !== undefined) {
+    DOM.quickNearBuffer.value = risk.nearThresholdBufferPct;
+  }
+  if (DOM.quickStopLossPct && risk.maxDailyLossNetPct !== undefined) {
+    DOM.quickStopLossPct.value = risk.maxDailyLossNetPct;
+  }
+  if (DOM.quickMaxOrders && risk.maxDailyOrders !== undefined) {
+    DOM.quickMaxOrders.value = risk.maxDailyOrders;
+  }
+  let storedRoute = '';
+  try { storedRoute = localStorage.getItem('algo_order_routing_mode') || ''; } catch (e) {}
+  const rMode = state.selectedRoutingMode ||
+    (risk.orderRoutingMode === 'all_funded' ? 'all_funded' : (risk.orderRoutingMode === 'selected' ? 'selected' : '')) ||
+    (storedRoute === 'all_funded' ? 'all_funded' : 'selected');
+  state.selectedRoutingMode = rMode;
+  if (DOM.quickRoutingMode) {
+    DOM.quickRoutingMode.value = rMode;
+  }
+  if (DOM.orderRoutingMode) {
+    DOM.orderRoutingMode.value = rMode;
+  }
+  updateQuickHints();
+}
+
+[DOM.quickCapitalDeployPct, DOM.quickTargetPct, DOM.quickNearBuffer, DOM.quickStopLossPct, DOM.quickMaxOrders].forEach(el => {
+  if (!el) return;
+  el.addEventListener('input', () => {
+    updateQuickHints();
+    if (el === DOM.quickCapitalDeployPct && typeof refreshOrderSizingFromBalance === 'function') {
+      refreshOrderSizingFromBalance();
+    }
+  });
+});
+if (DOM.quickRoutingMode) {
+  DOM.quickRoutingMode.addEventListener('change', () => {
+    applyRoutingModeSelection(DOM.quickRoutingMode.value, true);
+  });
+}
 
 /* ============================================================
    SSE (SERVER-SENT EVENTS) CONNECTION
@@ -390,6 +507,10 @@ function handleMarketTick(payload) {
   if (payload.rules) {
     state.rules = payload.rules;
   }
+
+  if (payload.riskSettings || payload.dailyOrders) {
+    syncRiskSettingsToUI(payload.riskSettings || state.riskSettings, payload.dailyOrders || state.dailyOrders);
+  }
 }
 
 function updateMetricHeaders() {
@@ -457,7 +578,7 @@ async function loadStatus() {
 
       renderAccountsTable();
       updateBrokerSelect();
-      updateQuickHints();
+      syncRiskSettingsToUI(data.riskSettings || {}, data.dailyOrders || null, !state.selectedRoutingMode);
     }
   } catch (err) {}
 }
@@ -891,18 +1012,17 @@ DOM.deleteRuleBtn.addEventListener('click', async () => {
   loadPositions();
 });
 
-// Quick Global Rule apply on page
+// Quick Global Order & Net Profit % Rule apply on page
 DOM.applyGlobalRuleBtn.addEventListener('click', async () => {
-  const targetPct = Number(DOM.quickTargetPct.value);
-  const nearBuf = Number(DOM.quickNearBuffer.value);
-  const stopLossPct = Number(DOM.quickStopLossPct.value);
+  const capitalDeployPct = Math.max(1, Math.min(100, Number((DOM.quickCapitalDeployPct && DOM.quickCapitalDeployPct.value) || 100)));
+  const targetPct = Number(DOM.quickTargetPct.value || 1.5);
+  const nearBuf = Number(DOM.quickNearBuffer.value || 98);
+  const stopLossPct = Number(DOM.quickStopLossPct.value || 1.0);
+  const maxDailyOrders = Math.max(0, Math.round(Number((DOM.quickMaxOrders && DOM.quickMaxOrders.value) || 0)));
+  const orderRoutingMode = (DOM.quickRoutingMode && DOM.quickRoutingMode.value === 'all_funded') ? 'all_funded' : 'selected';
 
-  // Apply to all currently open positions
+  // Apply Net Profit % rules to all currently open positions
   const openPos = state.positions.filter(p => p.isOpen && p.netQty !== 0);
-  if (openPos.length === 0) {
-    showToast('No open positions right now. Settings will apply globally to next trades!', 'info');
-  }
-
   for (const pos of openPos) {
     await fetch('/api/autoexit/rules', {
       method: 'POST',
@@ -919,18 +1039,31 @@ DOM.applyGlobalRuleBtn.addEventListener('click', async () => {
     });
   }
 
-  // Update global risk settings
-  await fetch('/api/risk-settings', {
+  // Persist global day order & risk settings
+  const res = await fetch('/api/risk-settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      capitalDeployPct,
       targetDailyNetProfitPct: targetPct,
+      nearThresholdBufferPct: nearBuf,
       maxDailyLossNetPct: stopLossPct,
+      maxDailyOrders,
+      orderRoutingMode,
       autoExitEnabled: true
     })
   });
-
-  showToast(`Applied Net Profit % exit rule (+${targetPct}% / near ${nearBuf}%) across all positions!`, 'success');
+  const d = await res.json();
+  if (d && d.success) {
+    state.selectedRoutingMode = orderRoutingMode;
+    try { localStorage.setItem('algo_order_routing_mode', orderRoutingMode); } catch (e) {}
+    syncRiskSettingsToUI(d.riskSettings, d.dailyOrders, true);
+  }
+  refreshOrderSizingFromBalance();
+  showToast(
+    `Saved settings: Deploy ${capitalDeployPct}%, Net Target +${targetPct}%, Max Loss -${stopLossPct}%, Max Orders ${maxDailyOrders || '∞'}, Routing: ${orderRoutingMode === 'all_funded' ? 'All Funded Brokers' : 'Selected Broker'}`,
+    'success'
+  );
   loadPositions();
 });
 
@@ -1444,6 +1577,8 @@ function updateOrderFreezePreview() {
   const fq = Number(lastOrderSpec.freezeQty || 0);
   const lot = Number(lastOrderSpec.lotSize || 1);
   const bal = Number(lastOrderSpec.availableCash || 0);
+  const usable = Number(lastOrderSpec.usableCash !== undefined ? lastOrderSpec.usableCash : bal);
+  const deployPct = Number(lastOrderSpec.capitalDeployPct || 100);
   const rate = Number(lastOrderSpec.price || 0);
   const maxSlice = fq > 0 ? Math.max(lot, Math.floor(fq / lot) * lot) : 0;
   const sliceCount = (fq > 0 && qty > fq) ? Math.ceil(qty / maxSlice) : (qty > 0 ? 1 : 0);
@@ -1452,7 +1587,20 @@ function updateOrderFreezePreview() {
     ? ` • Need ₹${(lot * rate).toFixed(2)} for 1 lot`
     : '';
   const rateStr = rate > 0 ? ` | Rate: ₹${rate.toFixed(2)}` : '';
-  DOM.orderSizingHint.textContent = `Balance: ₹${bal.toLocaleString('en-IN')}${rateStr} | Lot: ${lot} | Freeze: ${fq > 0 ? fq : 'None'}${splitStr}${insuffStr}`;
+  const deployStr = deployPct < 100 ? ` (Deploy ${deployPct}%: ₹${usable.toLocaleString('en-IN')})` : '';
+
+  if (lastOrderSpec.routingMode === 'all_funded' && Array.isArray(lastOrderSpec.eligibleBrokers)) {
+    const elig = lastOrderSpec.eligibleBrokers;
+    const skip = lastOrderSpec.skippedBrokers || [];
+    const eligText = elig.length > 0
+      ? elig.map(b => `${b.name}: ${b.quantity} qty`).join(', ')
+      : 'None';
+    const skipText = skip.length > 0 ? ` • Skipped (${skip.length}): ${skip.map(s => s.name).join(', ')}` : '';
+    DOM.orderSizingHint.textContent = `All Funded (${elig.length}/${elig.length + skip.length}): ${eligText}${deployStr}${rateStr} | Lot: ${lot}${skipText}`;
+    return;
+  }
+
+  DOM.orderSizingHint.textContent = `Balance: ₹${bal.toLocaleString('en-IN')}${deployStr}${rateStr} | Lot: ${lot} | Freeze: ${fq > 0 ? fq : 'None'}${splitStr}${insuffStr}`;
 }
 
 async function refreshOrderSizingFromBalance() {
@@ -1467,12 +1615,16 @@ async function refreshOrderSizingFromBalance() {
     const enteredPrice = Number(DOM.orderPrice.value || 0);
     const triggerPrice = Number((DOM.orderTriggerPrice && DOM.orderTriggerPrice.value) || 0);
     const ltp = Number(orderUiState.liveLtp || 0) || (ot === 'MKT' ? enteredPrice : 0);
+    const routingMode = (DOM.orderRoutingMode && DOM.orderRoutingMode.value) || (DOM.quickRoutingMode && DOM.quickRoutingMode.value) || 'selected';
+    const allocationPct = DOM.quickCapitalDeployPct ? Number(DOM.quickCapitalDeployPct.value || 100) : undefined;
 
     const res = await fetch('/api/orders/calculate-quantity', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         accountId,
+        routingMode,
+        allocationPct,
         tradingSymbol: symbol,
         instrumentToken: DOM.orderInstrumentToken ? DOM.orderInstrumentToken.value : '',
         exchangeSegment: DOM.orderSegment.value,
@@ -1554,6 +1706,11 @@ if (DOM.orderBrokerSelect) {
     refreshOrderSizingFromBalance();
   });
 }
+if (DOM.orderRoutingMode) {
+  DOM.orderRoutingMode.addEventListener('change', () => {
+    applyRoutingModeSelection(DOM.orderRoutingMode.value, true);
+  });
+}
 [DOM.orderSegment, DOM.orderAutoQty].forEach(el => {
   if (!el) return;
   el.addEventListener('change', refreshOrderSizingFromBalance);
@@ -1585,8 +1742,12 @@ DOM.orderForm.addEventListener('submit', async e => {
     DOM.orderQuantity.value = qtyVal;
   }
 
+  const routingMode = (DOM.orderRoutingMode && DOM.orderRoutingMode.value) || (DOM.quickRoutingMode && DOM.quickRoutingMode.value) || 'selected';
+  const allocationPct = DOM.quickCapitalDeployPct ? Number(DOM.quickCapitalDeployPct.value || 100) : undefined;
   const payload = {
     accountId: DOM.orderBrokerSelect.value,
+    routingMode,
+    allocationPct,
     tradingSymbol: DOM.orderSymbol.value.trim(),
     instrumentToken: DOM.orderInstrumentToken ? DOM.orderInstrumentToken.value : '',
     exchangeSegment: DOM.orderSegment.value,
@@ -1594,7 +1755,7 @@ DOM.orderForm.addEventListener('submit', async e => {
     product: DOM.orderProduct.value,
     orderType: ot,
     quantity: qtyVal,
-    autoQuantity: Boolean(DOM.orderAutoQty && DOM.orderAutoQty.checked && !(qtyVal > 0)),
+    autoQuantity: Boolean(DOM.orderAutoQty && DOM.orderAutoQty.checked),
     price: ot === 'MKT' ? 0 : enteredPrice,
     triggerPrice: ot === 'SL' ? triggerPrice : 0,
     ltp: Number(orderUiState.liveLtp || enteredPrice || 0)
@@ -1609,9 +1770,16 @@ DOM.orderForm.addEventListener('submit', async e => {
     });
     const d = await res.json();
     if (d.success) {
-      const msg = d.sliced
-        ? `Order split into ${d.sliceCount} orders (Freeze ${d.freezeQty})! Total Qty: ${d.totalQuantity} • IDs: ${(d.orderIds || []).join(', ')}`
-        : `Order executed on broker! Qty: ${d.totalQuantity || payload.quantity} • ID: ${d.orderId}`;
+      if (d.dailyOrders) syncRiskSettingsToUI(state.riskSettings, d.dailyOrders);
+      let msg;
+      if (d.routingMode === 'all_funded') {
+        const execList = (d.executedBrokers || []).map(b => `${b.name}: ${b.quantity}`).join(', ');
+        msg = `Executed on ${d.executedCount} funded broker(s): ${execList} (Total Qty: ${d.totalQuantity})`;
+      } else {
+        msg = d.sliced
+          ? `Order split into ${d.sliceCount} orders (Freeze ${d.freezeQty})! Total Qty: ${d.totalQuantity} • IDs: ${(d.orderIds || []).join(', ')}`
+          : `Order executed on broker! Qty: ${d.totalQuantity || payload.quantity} • ID: ${d.orderId}`;
+      }
       showToast(msg, 'success');
       loadPositions();
       loadOrders();

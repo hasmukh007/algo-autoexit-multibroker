@@ -953,10 +953,11 @@ async function run() {
     assert.deepStrictEqual(largeSized.slices, [1755, 1560]);
 
     // Test MultiBrokerManager.placeOrder freeze splitting + autoQuantity
-    const mgrSplit = new MultiBrokerManager({ loadConfig: () => ({ mode: 'live' }) }, { scripMasterManager: scripMgr });
+    const mgrSplit = new MultiBrokerManager({ loadConfig: () => ({ mode: 'live' }) }, { scripMasterManager: scripMgr, dailyOrdersFile: null });
     for (const inst of mgrSplit.brokerInstances.values()) {
       if (typeof inst.disconnect === 'function') inst.disconnect();
     }
+    mgrSplit.brokerInstances.clear();
     const placedSlices = [];
     const mockLiveBroker = {
       id: 'live_test_1',
@@ -1128,6 +1129,112 @@ async function run() {
     assert.strictEqual(dhanBodySent.orderType, 'STOP_LOSS');
     assert.strictEqual(dhanBodySent.price, 150.5);
     assert.strictEqual(dhanBodySent.triggerPrice, 150);
+
+    // Test Capital Deploy % (50%), Max Daily Orders Cap, Daily Risk Guard, and All-Funded Multi-Broker Routing
+    let riskState = {
+      capitalDeployPct: 50,
+      maxDailyOrders: 3,
+      orderRoutingMode: 'selected',
+      targetDailyNetProfitPct: 2.0,
+      maxDailyLossNetPct: 1.5
+    };
+    let dailyBlocked = false;
+    const mgrRisk = new MultiBrokerManager(
+      { loadConfig: () => ({ mode: 'live', riskSettings: riskState }) },
+      {
+        scripMasterManager: scripMgr,
+        dailyOrdersFile: null,
+        dailyRiskGuardProvider: () => (dailyBlocked ? { blocked: true, reason: 'Max loss hit' } : { blocked: false, reason: null })
+      }
+    );
+    for (const inst of mgrRisk.brokerInstances.values()) {
+      if (typeof inst.disconnect === 'function') inst.disconnect();
+    }
+    mgrRisk.brokerInstances.clear();
+    const routedOrders = [];
+    const makeRoutedBroker = (id, name, cash) => ({
+      id,
+      name,
+      broker: 'sahi',
+      isMock: false,
+      isAuthenticated: true,
+      getFunds: async () => ({ availableCash: cash, utilizedMargin: 0, totalBalance: cash }),
+      placeOrder: async ord => {
+        routedOrders.push({ id, qty: ord.quantity });
+        return { success: true, orderId: `${id}-ORD-${routedOrders.length}` };
+      },
+      disconnect: () => {}
+    });
+    mgrRisk.brokerInstances.set('b_empty', makeRoutedBroker('b_empty', 'Angel Empty', 0));
+    mgrRisk.brokerInstances.set('b_funded_1', makeRoutedBroker('b_funded_1', 'Sahi 1', 50000));
+    mgrRisk.brokerInstances.set('b_funded_2', makeRoutedBroker('b_funded_2', 'Dhan 2', 30000));
+
+    // At 50% deploy: Sahi 1 (₹50,000 -> ₹25,000 usable) @ ₹150 => floor(25000/150/65)*65 = 2 lots (130), Dhan 2 (₹15,000 usable) => 1 lot (65)
+    const previewAll = await mgrRisk.calculateOrderQuantityForAccount({
+      accountId: 'b_funded_1',
+      routingMode: 'all_funded',
+      tradingSymbol: 'NIFTY27OCT26C25000',
+      exchangeSegment: 'NFO',
+      orderType: 'L',
+      price: 150
+    });
+    assert.strictEqual(previewAll.capitalDeployPct, 50);
+    assert.strictEqual(previewAll.quantity, 130);
+    assert.strictEqual(previewAll.eligibleBrokers.length, 2);
+    assert.strictEqual(previewAll.skippedBrokers.length, 1);
+
+    const routeRes = await mgrRisk.placeOrder({
+      routingMode: 'all_funded',
+      tradingSymbol: 'NIFTY27OCT26C25000',
+      exchangeSegment: 'NFO',
+      transactionType: 'B',
+      orderType: 'L',
+      price: 150,
+      autoQuantity: true
+    });
+    assert.strictEqual(routeRes.routingMode, 'all_funded');
+    assert.strictEqual(routeRes.executedCount, 2);
+    assert.strictEqual(routeRes.totalQuantity, 195);
+    assert.strictEqual(routeRes.skippedBrokers.length, 1);
+    assert.deepStrictEqual(routedOrders, [
+      { id: 'b_funded_1', qty: 130 },
+      { id: 'b_funded_2', qty: 65 }
+    ]);
+
+    // Used 2 of 3 maxDailyOrders; place 3rd order on b_funded_1 -> OK; 4th entry order -> blocked; exitPosition -> allowed!
+    const thirdOrd = await mgrRisk.placeOrder({
+      accountId: 'b_funded_1',
+      routingMode: 'selected',
+      tradingSymbol: 'NIFTY27OCT26C25000',
+      exchangeSegment: 'NFO',
+      transactionType: 'B',
+      orderType: 'MKT',
+      quantity: 65
+    });
+    assert.strictEqual(thirdOrd.dailyOrders.ordersPlacedToday, 3);
+    await assert.rejects(
+      () => mgrRisk.placeOrder({
+        accountId: 'b_funded_1',
+        routingMode: 'selected',
+        tradingSymbol: 'NIFTY27OCT26C25000',
+        exchangeSegment: 'NFO',
+        transactionType: 'B',
+        orderType: 'MKT',
+        quantity: 65
+      }),
+      /Daily max orders limit reached/
+    );
+    // Exit order must bypass daily order & circuit breaker limits
+    dailyBlocked = true;
+    const exitBypassRes = await mgrRisk.exitPosition({
+      accountId: 'b_funded_1',
+      broker: 'sahi',
+      symbol: 'NIFTY27OCT26C25000',
+      exchangeSegment: 'NFO',
+      netQty: 65,
+      product: 'MIS'
+    });
+    assert.strictEqual(exitBypassRes.success, true);
 
     console.log('   ✅ ScripMasterManager loads lotSize/freezeQty at 08:55 AM IST, auto-sizes from balance, and splits orders > freeze.');
   } finally {
@@ -1409,12 +1516,14 @@ async function run() {
     assert(homeRes.body.includes('orderTriggerPrice'), 'Dashboard must expose SL Trigger Price input');
     assert(homeRes.body.includes('topContractLtp') && homeRes.body.includes('orderBannerLtp'), 'Dashboard must show current price at top of window and order panel');
     assert(homeRes.body.includes('orderStrikeSelect') && homeRes.body.includes('orderResetAtmBtn'), 'Dashboard must expose Strike Price selector for Call/Put');
+    assert(homeRes.body.includes('quickCapitalDeployPct') && homeRes.body.includes('quickMaxOrders') && homeRes.body.includes('quickRoutingMode') && homeRes.body.includes('orderRoutingMode'), 'Dashboard must expose Capital Deploy %, Max Orders/Day, and Order Routing controls on top');
     const appJsRes = await httpRequest(testPort, '/app.js');
     assert.strictEqual(appJsRes.status, 200);
     assert(appJsRes.body.includes('brokerSelectSignature') && appJsRes.body.includes('algo_selected_order_broker'), 'updateBrokerSelect must preserve user-selected broker across SSE ticks');
     assert(appJsRes.body.includes('sizingSeq') && appJsRes.body.includes('Math.max(0, Number(d.data.quantity || 0))'), 'refreshOrderSizingFromBalance must guard stale async responses and update zero-qty cleanly');
     assert(appJsRes.body.includes('populateStrikeSelect') && appJsRes.body.includes('updateOrderCurrentPriceDisplay'), 'app.js must populate strike selector and update top current price display');
     assert(appJsRes.body.includes('if (userChanged || ot === \'MKT\')'), 'Live ticks must NOT overwrite Limit or SL Limit/Trigger price textboxes');
+    assert(appJsRes.body.includes('riskSettingsInitialized') && appJsRes.body.includes('algo_order_routing_mode'), 'app.js must preserve Execution Target dropdown across SSE ticks');
     const ocJsRes = await httpRequest(testPort, '/option-chain.js');
     assert.strictEqual(ocJsRes.status, 200);
     assert(ocJsRes.body.includes('algo_selected_order_broker') && ocJsRes.body.includes('sizingSeq'), 'option-chain.js must preserve broker selection and guard async sizing');
@@ -1426,6 +1535,7 @@ async function run() {
     assert(ocRes.body.includes('<th>OI Built Up</th>'));
     assert(ocRes.body.includes('NIFTY Lot = 65'), 'Option chain modal must default to NIFTY lot size 65');
     assert(ocRes.body.includes('ocOrdTriggerPrice') && ocRes.body.includes('value="SL"'), 'Option chain modal must expose SL Trigger Price & Limit Price controls');
+    assert(ocRes.body.includes('ocOrdRoutingMode') && ocRes.body.includes('ocDayCapHint'), 'Option chain modal must expose order routing mode & day settings summary');
     assert(!ocRes.body.includes('<th>Side</th>'));
     console.log('   ✅ GET /option-chain serves live-only Option Chain page with OI Built Up & NIFTY Lot = 65.');
 
@@ -1532,6 +1642,26 @@ async function run() {
     const calcMktHttpData = JSON.parse(calcMktHttpRes.body).data;
     assert.strictEqual(calcMktHttpData.orderType, 'MKT');
     assert.strictEqual(calcMktHttpData.price, 120);
+
+    const statusRes = await httpRequest(testPort, '/api/status');
+    assert.strictEqual(statusRes.status, 200);
+    const statusData = JSON.parse(statusRes.body);
+    assert(statusData.riskSettings && statusData.dailyOrders, 'GET /api/status must expose riskSettings and dailyOrders stats');
+
+    const calcAllHttpRes = await httpRequest(testPort, '/api/orders/calculate-quantity', 'POST', {
+      tradingSymbol: 'NIFTY27OCT26C25000',
+      exchangeSegment: 'NFO',
+      orderType: 'MKT',
+      transactionType: 'B',
+      routingMode: 'all_funded',
+      allocationPct: 50,
+      ltp: 120
+    });
+    assert.strictEqual(calcAllHttpRes.status, 200);
+    const calcAllHttpData = JSON.parse(calcAllHttpRes.body).data;
+    assert.strictEqual(calcAllHttpData.routingMode, 'all_funded');
+    assert.strictEqual(calcAllHttpData.capitalDeployPct, 50);
+    assert(Array.isArray(calcAllHttpData.eligibleBrokers) && Array.isArray(calcAllHttpData.skippedBrokers));
     console.log('   ✅ /api/scrip-master/* and /api/orders/calculate-quantity endpoints verified.');
 
     const sse = await readSSEEvents(testPort, 2200);

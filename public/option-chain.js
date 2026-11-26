@@ -62,6 +62,8 @@ const OC_DOM = {
   ocOrdSymbolLabel: document.getElementById('ocOrdSymbolLabel'),
   ocOrdLtpLabel: document.getElementById('ocOrdLtpLabel'),
   ocOrdBroker: document.getElementById('ocOrdBroker'),
+  ocOrdRoutingMode: document.getElementById('ocOrdRoutingMode'),
+  ocDayCapHint: document.getElementById('ocDayCapHint'),
   ocOrdProduct: document.getElementById('ocOrdProduct'),
   ocOrdQty: document.getElementById('ocOrdQty'),
   ocOrdType: document.getElementById('ocOrdType'),
@@ -443,8 +445,25 @@ async function loadInitialSnapshot() {
 
 async function loadAccounts() {
   try {
-    const res = await fetch('/api/accounts');
-    const d = await res.json();
+    const [accRes, statusRes] = await Promise.all([
+      fetch('/api/accounts'),
+      fetch('/api/status')
+    ]);
+    const d = await accRes.json();
+    const st = await statusRes.json().catch(() => null);
+    if (st && st.success && st.riskSettings) {
+      ocModalSpec.riskSettings = st.riskSettings;
+      ocModalSpec.dailyOrders = st.dailyOrders || {};
+      if (OC_DOM.ocOrdRoutingMode) {
+        OC_DOM.ocOrdRoutingMode.value = st.riskSettings.orderRoutingMode === 'all_funded' ? 'all_funded' : 'selected';
+      }
+      if (OC_DOM.ocDayCapHint) {
+        const rs = st.riskSettings;
+        const used = (st.dailyOrders && st.dailyOrders.ordersPlacedToday) || 0;
+        const maxO = Number(rs.maxDailyOrders || 0);
+        OC_DOM.ocDayCapHint.textContent = `Deploy ${rs.capitalDeployPct || 100}% • Target +${rs.targetDailyNetProfitPct || 1.5}% • Loss -${rs.maxDailyLossNetPct || 1.0}% • Orders ${used}/${maxO > 0 ? maxO : '∞'}`;
+      }
+    }
     if (d.success && Array.isArray(d.data)) {
       let storedId = '';
       try { storedId = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
@@ -601,11 +620,18 @@ function updateOcFreezeHint() {
   const maxSlice = fq > 0 ? Math.max(lot, Math.floor(fq / lot) * lot) : 0;
   const sliceCount = (fq > 0 && qty > fq) ? Math.ceil(qty / maxSlice) : (qty > 0 ? 1 : 0);
   const splitNote = sliceCount > 1 ? ` • Auto-splits into ${sliceCount} orders (max ${maxSlice}/order)` : '';
-  const insuffNote = (OC_DOM.ocAutoQty && OC_DOM.ocAutoQty.checked && rate > 0 && qty === 0)
+  const insNote = (OC_DOM.ocAutoQty && OC_DOM.ocAutoQty.checked && rate > 0 && qty === 0)
     ? ` • Need ₹${(lot * rate).toFixed(2)} for 1 lot`
     : '';
   const rateNote = rate > 0 ? `Rate: ₹${rate.toFixed(2)} | ` : '';
-  OC_DOM.ocSizingHint.textContent = `${rateNote}Lot: ${lot} | Freeze: ${fq > 0 ? fq : 'None'}${splitNote}${insuffNote}`;
+  if (ocModalSpec.routingMode === 'all_funded' && Array.isArray(ocModalSpec.eligibleBrokers)) {
+    const elig = ocModalSpec.eligibleBrokers;
+    const skip = ocModalSpec.skippedBrokers || [];
+    const eligTxt = elig.length > 0 ? elig.map(b => `${b.name}: ${b.quantity}`).join(', ') : 'None';
+    OC_DOM.ocSizingHint.textContent = `All Funded (${elig.length}/${elig.length + skip.length}): ${eligTxt} | ${rateNote}Lot: ${lot}`;
+    return;
+  }
+  OC_DOM.ocSizingHint.textContent = `${rateNote}Lot: ${lot} | Freeze: ${fq > 0 ? fq : 'None'}${splitNote}${insNote}`;
 }
 
 async function recalculateOcOrderQty() {
@@ -617,12 +643,14 @@ async function recalculateOcOrderQty() {
     const side = (OC_DOM.ocOrdSide && OC_DOM.ocOrdSide.value) || 'B';
     const price = ot === 'MKT' ? 0 : Number(OC_DOM.ocOrdPrice.value || 0);
     const triggerPrice = ot === 'SL' && OC_DOM.ocOrdTriggerPrice ? Number(OC_DOM.ocOrdTriggerPrice.value || 0) : 0;
+    const routingMode = (OC_DOM.ocOrdRoutingMode && OC_DOM.ocOrdRoutingMode.value) || 'selected';
 
     const res = await fetch('/api/orders/calculate-quantity', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         accountId: OC_DOM.ocOrdBroker.value,
+        routingMode,
         tradingSymbol: symbol,
         instrumentToken: OC_DOM.ocOrdToken ? OC_DOM.ocOrdToken.value : '',
         exchangeSegment: 'NFO',
@@ -641,6 +669,9 @@ async function recalculateOcOrderQty() {
       ocModalSpec.freezeQty = d.data.freezeQty || 0;
       ocModalSpec.availableCash = d.data.availableCash || 0;
       ocModalSpec.rate = Number(d.data.price || 0);
+      ocModalSpec.routingMode = d.data.routingMode || routingMode;
+      ocModalSpec.eligibleBrokers = d.data.eligibleBrokers || [];
+      ocModalSpec.skippedBrokers = d.data.skippedBrokers || [];
       if (OC_DOM.ocOrdBalanceLabel) {
         OC_DOM.ocOrdBalanceLabel.textContent = `₹${Number(ocModalSpec.availableCash).toLocaleString('en-IN')}`;
       }
@@ -724,6 +755,9 @@ if (OC_DOM.ocOrdBroker) {
     recalculateOcOrderQty();
   });
 }
+if (OC_DOM.ocOrdRoutingMode) {
+  OC_DOM.ocOrdRoutingMode.addEventListener('change', recalculateOcOrderQty);
+}
 if (OC_DOM.ocAutoQty) {
   OC_DOM.ocAutoQty.addEventListener('change', recalculateOcOrderQty);
 }
@@ -740,8 +774,10 @@ OC_DOM.cancelOcOrderBtn.addEventListener('click', () => OC_DOM.ocOrderModal.clas
 OC_DOM.ocOrderForm.addEventListener('submit', async e => {
   e.preventDefault();
   const ot = OC_DOM.ocOrdType.value;
+  const routingMode = (OC_DOM.ocOrdRoutingMode && OC_DOM.ocOrdRoutingMode.value) || 'selected';
   const payload = {
     accountId: OC_DOM.ocOrdBroker.value,
+    routingMode,
     tradingSymbol: OC_DOM.ocOrdSymbol.value,
     instrumentToken: OC_DOM.ocOrdToken ? OC_DOM.ocOrdToken.value : '',
     exchangeSegment: 'nse_fo',
@@ -749,6 +785,7 @@ OC_DOM.ocOrderForm.addEventListener('submit', async e => {
     product: OC_DOM.ocOrdProduct.value,
     orderType: ot,
     quantity: Number(OC_DOM.ocOrdQty.value),
+    autoQuantity: Boolean(OC_DOM.ocAutoQty && OC_DOM.ocAutoQty.checked),
     lotSize: ocModalSpec.lotSize,
     freezeQty: ocModalSpec.freezeQty,
     price: ot === 'MKT' ? 0 : Number(OC_DOM.ocOrdPrice.value || 0),
@@ -765,9 +802,14 @@ OC_DOM.ocOrderForm.addEventListener('submit', async e => {
     });
     const d = await res.json();
     if (d.success) {
-      const msg = d.sliced
-        ? `Order split into ${d.sliceCount} orders (Freeze ${d.freezeQty}): ${payload.transactionType === 'B' ? 'BUY' : 'SELL'} ${payload.tradingSymbol} x ${d.totalQuantity}`
-        : `Order placed: ${payload.transactionType === 'B' ? 'BUY' : 'SELL'} ${payload.tradingSymbol} x ${d.totalQuantity || payload.quantity}`;
+      let msg;
+      if (d.routingMode === 'all_funded') {
+        msg = `Executed on ${d.executedCount} funded broker(s): ${(d.executedBrokers || []).map(b => `${b.name} (${b.quantity})`).join(', ')}`;
+      } else {
+        msg = d.sliced
+          ? `Order split into ${d.sliceCount} orders (Freeze ${d.freezeQty}): ${payload.transactionType === 'B' ? 'BUY' : 'SELL'} ${payload.tradingSymbol} x ${d.totalQuantity}`
+          : `Order placed: ${payload.transactionType === 'B' ? 'BUY' : 'SELL'} ${payload.tradingSymbol} x ${d.totalQuantity || payload.quantity}`;
+      }
       showToast(msg, 'success');
       OC_DOM.ocOrderModal.classList.remove('active');
     } else {

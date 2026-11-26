@@ -235,6 +235,7 @@ body {
 .auto-exit-quick-controls {
   display: flex;
   align-items: flex-end;
+  flex-wrap: wrap;
   gap: 14px;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
@@ -251,6 +252,17 @@ body {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-secondary);
+}
+.quick-ctrl-group > input,
+.quick-ctrl-group > select {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
 }
 
 .input-with-addon {
