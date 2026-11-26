@@ -219,9 +219,10 @@
           <input type="hidden" id="ocOrdSymbol">
           <input type="hidden" id="ocOrdToken">
           <input type="hidden" id="ocOrdSide">
-          <div class="modal-pos-summary" style="grid-template-columns: repeat(2, 1fr);">
+          <div class="modal-pos-summary" style="grid-template-columns: repeat(3, 1fr);">
             <div>Contract: <strong id="ocOrdSymbolLabel">--</strong></div>
             <div>Current LTP: <strong class="mono" id="ocOrdLtpLabel">--</strong></div>
+            <div>Balance: <strong class="mono" id="ocOrdBalanceLabel">--</strong></div>
           </div>
 
           <div class="form-row two-col">
@@ -240,21 +241,36 @@
 
           <div class="form-row two-col">
             <div class="form-group">
-              <label for="ocOrdQty" id="ocOrdQtyLabel">Quantity (NIFTY Lot = 65)</label>
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                <label for="ocOrdQty" id="ocOrdQtyLabel">Quantity (NIFTY Lot = 65)</label>
+                <label style="font-size:11px; color:var(--text-secondary); display:inline-flex; align-items:center; gap:4px; cursor:pointer;">
+                  <input type="checkbox" id="ocAutoQty" checked>
+                  <span>Auto from Balance</span>
+                </label>
+              </div>
               <input type="number" id="ocOrdQty" value="65" min="65" step="65" required>
+              <span class="input-hint mono" id="ocSizingHint" style="display:block; margin-top:4px;">Lot: 65 | Freeze: 1800</span>
             </div>
             <div class="form-group">
               <label for="ocOrdType">Order Type</label>
               <select id="ocOrdType">
                 <option value="MKT" selected>MARKET (MKT)</option>
                 <option value="L">LIMIT (L)</option>
+                <option value="SL">STOP LOSS (SL-LMT)</option>
               </select>
             </div>
           </div>
 
-          <div class="form-group" id="ocOrdPriceGroup" style="display: none; margin-bottom: 12px;">
-            <label for="ocOrdPrice">Limit Price (₹)</label>
-            <input type="number" id="ocOrdPrice" step="0.05" value="0">
+          <div class="form-row two-col" id="ocOrdPricingRow" style="display: none; margin-bottom: 12px;">
+            <div class="form-group" id="ocOrdTriggerGroup" style="display: none;">
+              <label for="ocOrdTriggerPrice">Trigger Price (₹)</label>
+              <input type="number" id="ocOrdTriggerPrice" step="0.05" value="0">
+            </div>
+            <div class="form-group" id="ocOrdPriceGroup">
+              <label for="ocOrdPrice" id="ocOrdPriceLabel">Limit Price (₹)</label>
+              <input type="number" id="ocOrdPrice" step="0.05" value="0">
+              <span class="input-hint" id="ocOrdPriceHint">Default: Buy +0.50 / Sell -0.50</span>
+            </div>
           </div>
 
           <div class="modal-actions">

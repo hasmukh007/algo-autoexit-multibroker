@@ -28,6 +28,10 @@
           <span class="pill-label">ATM:</span>
           <strong class="mono" id="topNiftyAtm">--</strong>
         </div>
+        <div class="nifty-atm-pill" id="topContractPricePill" title="Selected Option Contract Current Live LTP">
+          <span class="pill-label" id="topContractLabel">ATM CE:</span>
+          <strong class="mono" id="topContractLtp">--</strong>
+        </div>
         <div class="nifty-feed-pill" id="topNiftyFeedPill">
           <span class="pulse-dot"></span>
           <span id="topNiftyFeedStatus">9:00 AM Feed: Initializing...</span>
@@ -360,9 +364,16 @@
       <section class="tab-panel" id="tabPlaceOrder">
         <div class="order-form-container">
           <div class="order-form-card">
-            <div class="form-header">
-              <h2>Execute Order to Selected Broker</h2>
-              <p>Routes order to Angel One, Dhan, or Kotak Neo. Position will automatically show in the positions tab upon execution.</p>
+            <div class="form-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+              <div>
+                <h2>Execute Order to Selected Broker</h2>
+                <p>Routes order to Angel One, Dhan, Kotak Neo, or Sahi. Auto-sizes from broker balance &amp; splits &gt; freeze.</p>
+              </div>
+              <div class="nifty-atm-pill" id="orderTopPriceBanner" style="padding:6px 12px; font-size:12px;">
+                <span class="pill-label" id="orderBannerSymbol">ATM CE</span>
+                <span>Current Price:</span>
+                <strong class="mono" id="orderBannerLtp" style="color:var(--profit-color);">--</strong>
+              </div>
             </div>
 
             <form id="orderForm">
@@ -382,17 +393,40 @@
                 <label for="sellRadio" class="btn-sell-toggle">SELL</label>
               </div>
 
+              <!-- Strike Price & Call / Put Selector -->
+              <div class="form-row two-col" style="margin-bottom: 12px;">
+                <div class="form-group">
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <label for="orderStrikeSelect">Strike Price (NIFTY)</label>
+                    <button type="button" class="btn-text" id="orderResetAtmBtn" title="Reset to ATM Strike">Use ATM</button>
+                  </div>
+                  <select id="orderStrikeSelect">
+                    <option value="">ATM Strike (Awaiting live feed...)</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label>Option Type (Call / Put)</label>
+                  <div class="chart-tf-group" id="orderAtmGroup" style="display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:4px;">
+                    <button type="button" class="tf-btn active" id="atmCeBtn" data-opt="CE">CALL (CE)</button>
+                    <button type="button" class="tf-btn" id="atmPeBtn" data-opt="PE">PUT (PE)</button>
+                  </div>
+                </div>
+              </div>
+
               <!-- Symbol & Segment -->
+              <input type="hidden" id="orderInstrumentToken">
               <div class="form-row two-col">
                 <div class="form-group">
-                  <label for="orderSymbol">Trading Symbol</label>
-                  <input type="text" id="orderSymbol" placeholder="e.g. NIFTY 24NOV 24200 CE, RELIANCE-EQ" required>
+                  <label for="orderSymbol">Trading Symbol (Default: ATM CE / PE)</label>
+                  <input type="text" id="orderSymbol" placeholder="Auto-selects ATM CE / PE from live feed" required>
                   <div class="quick-chips">
-                    <span class="chip" data-symbol="NIFTY 24NOV 24200 CE" data-segment="nse_fo">NIFTY 24200 CE</span>
-                    <span class="chip" data-symbol="BANKNIFTY 24NOV 52200 PE" data-segment="nse_fo">BANKNIFTY 52200 PE</span>
+                    <span class="chip chip-atm" data-atm-opt="CE">ATM CE</span>
+                    <span class="chip chip-atm" data-atm-opt="PE">ATM PE</span>
                     <span class="chip" data-symbol="RELIANCE-EQ" data-segment="nse_cm">RELIANCE</span>
                     <span class="chip" data-symbol="HDFCBANK-EQ" data-segment="nse_cm">HDFCBANK</span>
                   </div>
+                  <span class="input-hint mono" id="orderLtpHint" style="display:block; margin-top:4px;">Live LTP: --</span>
                 </div>
 
                 <div class="form-group">
@@ -422,27 +456,46 @@
                   <select id="orderType">
                     <option value="MKT" selected>MARKET (MKT)</option>
                     <option value="L">LIMIT (L)</option>
-                    <option value="SL">STOP LOSS (SL)</option>
+                    <option value="SL">STOP LOSS (SL-LMT)</option>
                   </select>
                 </div>
               </div>
 
-              <!-- Quantity & Price -->
+              <!-- Quantity, Limit Price & SL Trigger Price -->
               <div class="form-row two-col">
                 <div class="form-group">
-                  <label for="orderQuantity">Quantity</label>
-                  <input type="number" id="orderQuantity" min="1" value="65" required>
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <label for="orderQuantity" id="orderQtyLabel">Quantity (Lot = 65)</label>
+                    <label style="font-size:11px; color:var(--text-secondary); display:inline-flex; align-items:center; gap:4px; cursor:pointer;">
+                      <input type="checkbox" id="orderAutoQty" checked>
+                      <span>Auto Qty from Balance</span>
+                    </label>
+                  </div>
+                  <input type="number" id="orderQuantity" min="65" step="65" value="65" required>
                   <div class="quick-chips">
                     <span class="chip-qty" data-qty="65">+65 (1L)</span>
                     <span class="chip-qty" data-qty="130">+130 (2L)</span>
                     <span class="chip-qty" data-qty="325">+325 (5L)</span>
                   </div>
+                  <span class="input-hint mono" id="orderSizingHint" style="display:block; margin-top:4px;">Balance: -- | Lot: 65 | Freeze: -- (auto-splits if &gt; freeze)</span>
                 </div>
 
-                <div class="form-group">
-                  <label for="orderPrice">Price (₹)</label>
-                  <input type="number" id="orderPrice" step="0.05" value="0.00" disabled>
-                  <span class="input-hint">0 for Market</span>
+                <div class="form-group" id="orderPricingCol">
+                  <div id="orderTriggerPriceGroup" style="display: none; margin-bottom: 10px;">
+                    <label for="orderTriggerPrice">Trigger Price (₹)</label>
+                    <input type="number" id="orderTriggerPrice" step="0.05" value="0.00">
+                  </div>
+                  <div id="orderPriceGroup" style="display: none;">
+                    <label for="orderPrice" id="orderPriceLabel">Limit Price (₹)</label>
+                    <input type="number" id="orderPrice" step="0.05" value="0.00">
+                    <span class="input-hint" id="orderPriceHint">Buy: +0.50 / Sell: -0.50 default (never overwritten by live ticks)</span>
+                  </div>
+                  <div id="orderMarketNote">
+                    <label>Execution Price</label>
+                    <div class="input-hint mono" style="padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-secondary); color: var(--text-secondary);">
+                      Market Order — uses Current Price shown at top
+                    </div>
+                  </div>
                 </div>
               </div>
 

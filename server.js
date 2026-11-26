@@ -9,6 +9,7 @@ const AutoExitEngine = require('./lib/autoExitEngine');
 const { NiftyFeedManager } = require('./lib/niftyFeedManager');
 const { NiftyCandleManager } = require('./lib/niftyCandleManager');
 const AutoLoginScheduler = require('./lib/autoLoginScheduler');
+const { ScripMasterManager } = require('./lib/scripMasterManager');
 const configManager = require('./lib/configManager');
 const totpHelper = require('./lib/totpHelper');
 
@@ -30,6 +31,10 @@ const niftyFeedManager = new NiftyFeedManager(multiBrokerManager, configManager)
 
 // Instantiate NIFTY 3-Minute Candle Store (SQLite + WebSocket live aggregation + 3-day REST backfill)
 const niftyCandleManager = new NiftyCandleManager(multiBrokerManager);
+
+// Instantiate 8:55 AM IST Scrip Master Downloader (loads lotSize & freezeQty daily)
+const scripMasterManager = new ScripMasterManager();
+multiBrokerManager.setScripMasterManager(scripMasterManager);
 
 // Instantiate 8:59 AM IST Auto-Login Scheduler for all brokers
 const autoLoginScheduler = new AutoLoginScheduler(multiBrokerManager);
@@ -129,6 +134,16 @@ niftyCandleManager.on('history_backfilled', info => {
 
 multiBrokerManager.on('order_update', evt => {
   autoExitEngine.log('INFO', `Order/trade update received on ${String(evt.broker || '').toUpperCase()} WebSocket — refreshing net positions & holdings.`);
+});
+
+scripMasterManager.on('scrip_master_loaded', summary => {
+  autoExitEngine.log(
+    'INFO',
+    `8:55 AM Scrip Master updated (${summary.timeIST}): ${summary.instrumentCount.toLocaleString('en-IN')} contracts loaded (lot sizes & freeze limits).`
+  );
+  if (sseClients.size > 0) {
+    broadcastSSE('scrip_master_loaded', summary);
+  }
 });
 
 autoLoginScheduler.on('auto_login_completed', async payload => {
@@ -560,16 +575,59 @@ const server = http.createServer(async (req, res) => {
 
       if (pathname === '/api/orders' && method === 'POST') {
         const orderData = await parseBody(req);
-        const result = await multiBrokerManager.exitPosition({
-          accountId: orderData.accountId,
-          broker: orderData.broker || 'kotakneo',
-          symbol: orderData.tradingSymbol,
-          exchangeSegment: orderData.exchangeSegment,
-          product: orderData.product,
-          netQty: orderData.transactionType === 'B' ? -Number(orderData.quantity) : Number(orderData.quantity)
-        });
-        autoExitEngine.log('INFO', `Order placed on broker: ${orderData.transactionType} ${orderData.tradingSymbol} x ${orderData.quantity}`, result);
+        const result = await multiBrokerManager.placeOrder(orderData);
+        const splitNote = result.sliced ? ` [Split into ${result.sliceCount} orders, Freeze=${result.freezeQty}]` : '';
+        autoExitEngine.log(
+          'INFO',
+          `Order placed on broker: ${orderData.transactionType || 'B'} ${orderData.tradingSymbol} x ${result.totalQuantity}${splitNote}`,
+          result
+        );
         return sendJson(res, 200, result);
+      }
+
+      if (pathname === '/api/orders/calculate-quantity' && method === 'POST') {
+        const body = await parseBody(req);
+        // Resolve live LTP from option chain / positions when caller didn't pass ltp explicitly
+        let liveLtp = Number(body.ltp || 0);
+        if (!(liveLtp > 0) && (body.tradingSymbol || body.symbol)) {
+          const targetSym = String(body.tradingSymbol || body.symbol).trim().toUpperCase();
+          const snap = niftyFeedManager.getSnapshot();
+          if (snap && Array.isArray(snap.strikes)) {
+            for (const row of snap.strikes) {
+              for (const leg of [row.ce, row.pe]) {
+                if (leg && String(leg.symbol || '').trim().toUpperCase() === targetSym && Number(leg.ltp) > 0) {
+                  liveLtp = Number(leg.ltp);
+                  break;
+                }
+              }
+              if (liveLtp > 0) break;
+            }
+          }
+        }
+        const calc = await multiBrokerManager.calculateOrderQuantityForAccount({
+          ...body,
+          ltp: liveLtp
+        });
+        return sendJson(res, 200, { success: true, data: { ...calc, ltp: liveLtp } });
+      }
+
+      if (pathname === '/api/scrip-master/status' && method === 'GET') {
+        return sendJson(res, 200, { success: true, data: scripMasterManager.getStatus() });
+      }
+
+      if (pathname === '/api/scrip-master/refresh' && method === 'POST') {
+        const summary = await scripMasterManager.downloadAll();
+        return sendJson(res, 200, { success: true, data: summary });
+      }
+
+      if (pathname === '/api/scrip-master/lookup' && method === 'GET') {
+        const spec = scripMasterManager.getContractSpec({
+          symbol: parsedUrl.searchParams.get('symbol') || '',
+          underlying: parsedUrl.searchParams.get('underlying') || '',
+          exchangeSegment: parsedUrl.searchParams.get('segment') || '',
+          instrumentToken: parsedUrl.searchParams.get('token') || ''
+        });
+        return sendJson(res, 200, { success: true, data: spec });
       }
 
       /* ============================================================
@@ -747,6 +805,7 @@ server.listen(PORT, () => {
 });
 
 function shutdownGracefully() {
+  scripMasterManager.close();
   autoLoginScheduler.stop();
   niftyFeedManager.stopBackgroundLoops();
   niftyCandleManager.close();

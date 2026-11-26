@@ -56,13 +56,21 @@ const OC_DOM = {
   ocOrdToken: document.getElementById('ocOrdToken'),
   ocOrdSide: document.getElementById('ocOrdSide'),
   ocOrdQtyLabel: document.getElementById('ocOrdQtyLabel'),
+  ocOrdBalanceLabel: document.getElementById('ocOrdBalanceLabel'),
+  ocAutoQty: document.getElementById('ocAutoQty'),
+  ocSizingHint: document.getElementById('ocSizingHint'),
   ocOrdSymbolLabel: document.getElementById('ocOrdSymbolLabel'),
   ocOrdLtpLabel: document.getElementById('ocOrdLtpLabel'),
   ocOrdBroker: document.getElementById('ocOrdBroker'),
   ocOrdProduct: document.getElementById('ocOrdProduct'),
   ocOrdQty: document.getElementById('ocOrdQty'),
   ocOrdType: document.getElementById('ocOrdType'),
+  ocOrdPricingRow: document.getElementById('ocOrdPricingRow'),
+  ocOrdTriggerGroup: document.getElementById('ocOrdTriggerGroup'),
+  ocOrdTriggerPrice: document.getElementById('ocOrdTriggerPrice'),
   ocOrdPriceGroup: document.getElementById('ocOrdPriceGroup'),
+  ocOrdPriceLabel: document.getElementById('ocOrdPriceLabel'),
+  ocOrdPriceHint: document.getElementById('ocOrdPriceHint'),
   ocOrdPrice: document.getElementById('ocOrdPrice'),
   submitOcOrderBtn: document.getElementById('submitOcOrderBtn'),
   toastContainer: document.getElementById('toastContainer')
@@ -438,6 +446,9 @@ async function loadAccounts() {
     const res = await fetch('/api/accounts');
     const d = await res.json();
     if (d.success && Array.isArray(d.data)) {
+      let storedId = '';
+      try { storedId = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
+      const prevSelected = OC_DOM.ocOrdBroker.value || storedId;
       ocState.accounts = d.data;
       OC_DOM.ocOrdBroker.innerHTML = '';
       if (d.data.length === 0) {
@@ -452,6 +463,9 @@ async function loadAccounts() {
           opt.textContent = `${acc.name} (${acc.broker.toUpperCase()})`;
           OC_DOM.ocOrdBroker.appendChild(opt);
         });
+        if (prevSelected && d.data.some(acc => acc.id === prevSelected)) {
+          OC_DOM.ocOrdBroker.value = prevSelected;
+        }
       }
     }
   } catch (e) {}
@@ -525,6 +539,126 @@ OC_DOM.filterBtns.forEach(btn => {
   });
 });
 
+const ocModalSpec = { lotSize: 65, freezeQty: 1800, availableCash: 0, ltp: 0, rate: 0, limitEdited: false, triggerEdited: false, sizingSeq: 0 };
+
+function roundOcTick(val, step = 0.05) {
+  const n = Number(val || 0);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Number((Math.round(n / step) * step).toFixed(2));
+}
+
+function defaultOcLimitPrice(basePrice, side) {
+  const p = Number(basePrice || 0);
+  if (!(p > 0)) return 0;
+  return roundOcTick(Math.max(0.05, p + (side === 'S' ? -0.5 : 0.5)));
+}
+
+function syncOcOrderTypePricingUI(forceDefaults = false) {
+  const ot = OC_DOM.ocOrdType ? OC_DOM.ocOrdType.value : 'MKT';
+  const side = (OC_DOM.ocOrdSide && OC_DOM.ocOrdSide.value) || 'B';
+  const ltp = Number(ocModalSpec.ltp || 0);
+
+  if (ot === 'MKT') {
+    if (OC_DOM.ocOrdPricingRow) OC_DOM.ocOrdPricingRow.style.display = 'none';
+    if (OC_DOM.ocOrdTriggerGroup) OC_DOM.ocOrdTriggerGroup.style.display = 'none';
+    return;
+  }
+
+  if (OC_DOM.ocOrdPricingRow) OC_DOM.ocOrdPricingRow.style.display = 'grid';
+  if (ot === 'SL') {
+    if (OC_DOM.ocOrdTriggerGroup) OC_DOM.ocOrdTriggerGroup.style.display = 'block';
+    if (OC_DOM.ocOrdPriceLabel) OC_DOM.ocOrdPriceLabel.textContent = 'SL Limit Price (₹)';
+    if (OC_DOM.ocOrdPriceHint) {
+      OC_DOM.ocOrdPriceHint.textContent = side === 'S' ? 'Default = Trigger - 0.50 (Sell)' : 'Default = Trigger + 0.50 (Buy)';
+    }
+    if (OC_DOM.ocOrdTriggerPrice && (forceDefaults || !ocModalSpec.triggerEdited)) {
+      OC_DOM.ocOrdTriggerPrice.value = roundOcTick(ltp).toFixed(2);
+    }
+    const trig = Number((OC_DOM.ocOrdTriggerPrice && OC_DOM.ocOrdTriggerPrice.value) || ltp || 0);
+    if (OC_DOM.ocOrdPrice && (forceDefaults || !ocModalSpec.limitEdited)) {
+      OC_DOM.ocOrdPrice.value = defaultOcLimitPrice(trig, side).toFixed(2);
+    }
+    return;
+  }
+
+  // LIMIT
+  if (OC_DOM.ocOrdTriggerGroup) OC_DOM.ocOrdTriggerGroup.style.display = 'none';
+  if (OC_DOM.ocOrdPriceLabel) OC_DOM.ocOrdPriceLabel.textContent = 'Limit Price (₹)';
+  if (OC_DOM.ocOrdPriceHint) {
+    OC_DOM.ocOrdPriceHint.textContent = side === 'S' ? 'Default = LTP - 0.50 (Sell)' : 'Default = LTP + 0.50 (Buy)';
+  }
+  if (OC_DOM.ocOrdPrice && (forceDefaults || !ocModalSpec.limitEdited)) {
+    OC_DOM.ocOrdPrice.value = defaultOcLimitPrice(ltp, side).toFixed(2);
+  }
+}
+
+function updateOcFreezeHint() {
+  if (!OC_DOM.ocSizingHint) return;
+  const qty = Math.round(Number(OC_DOM.ocOrdQty.value || 0));
+  const fq = Number(ocModalSpec.freezeQty || 0);
+  const lot = Number(ocModalSpec.lotSize || 65);
+  const rate = Number(ocModalSpec.rate || 0);
+  const maxSlice = fq > 0 ? Math.max(lot, Math.floor(fq / lot) * lot) : 0;
+  const sliceCount = (fq > 0 && qty > fq) ? Math.ceil(qty / maxSlice) : (qty > 0 ? 1 : 0);
+  const splitNote = sliceCount > 1 ? ` • Auto-splits into ${sliceCount} orders (max ${maxSlice}/order)` : '';
+  const insuffNote = (OC_DOM.ocAutoQty && OC_DOM.ocAutoQty.checked && rate > 0 && qty === 0)
+    ? ` • Need ₹${(lot * rate).toFixed(2)} for 1 lot`
+    : '';
+  const rateNote = rate > 0 ? `Rate: ₹${rate.toFixed(2)} | ` : '';
+  OC_DOM.ocSizingHint.textContent = `${rateNote}Lot: ${lot} | Freeze: ${fq > 0 ? fq : 'None'}${splitNote}${insuffNote}`;
+}
+
+async function recalculateOcOrderQty() {
+  const seq = ++ocModalSpec.sizingSeq;
+  try {
+    const symbol = OC_DOM.ocOrdSymbol.value;
+    if (!symbol) return;
+    const ot = OC_DOM.ocOrdType ? OC_DOM.ocOrdType.value : 'MKT';
+    const side = (OC_DOM.ocOrdSide && OC_DOM.ocOrdSide.value) || 'B';
+    const price = ot === 'MKT' ? 0 : Number(OC_DOM.ocOrdPrice.value || 0);
+    const triggerPrice = ot === 'SL' && OC_DOM.ocOrdTriggerPrice ? Number(OC_DOM.ocOrdTriggerPrice.value || 0) : 0;
+
+    const res = await fetch('/api/orders/calculate-quantity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: OC_DOM.ocOrdBroker.value,
+        tradingSymbol: symbol,
+        instrumentToken: OC_DOM.ocOrdToken ? OC_DOM.ocOrdToken.value : '',
+        exchangeSegment: 'NFO',
+        orderType: ot,
+        transactionType: side,
+        lotSize: ocModalSpec.lotSize,
+        price,
+        triggerPrice,
+        ltp: Number(ocModalSpec.ltp || 0)
+      })
+    });
+    const d = await res.json();
+    if (seq !== ocModalSpec.sizingSeq) return;
+    if (d.success && d.data) {
+      ocModalSpec.lotSize = d.data.lotSize || ocModalSpec.lotSize;
+      ocModalSpec.freezeQty = d.data.freezeQty || 0;
+      ocModalSpec.availableCash = d.data.availableCash || 0;
+      ocModalSpec.rate = Number(d.data.price || 0);
+      if (OC_DOM.ocOrdBalanceLabel) {
+        OC_DOM.ocOrdBalanceLabel.textContent = `₹${Number(ocModalSpec.availableCash).toLocaleString('en-IN')}`;
+      }
+      if (OC_DOM.ocOrdQtyLabel) {
+        OC_DOM.ocOrdQtyLabel.textContent = `Quantity (Lot Size = ${ocModalSpec.lotSize})`;
+      }
+      if (OC_DOM.ocOrdQty) {
+        OC_DOM.ocOrdQty.min = ocModalSpec.lotSize;
+        OC_DOM.ocOrdQty.step = ocModalSpec.lotSize;
+        if (OC_DOM.ocAutoQty && OC_DOM.ocAutoQty.checked) {
+          OC_DOM.ocOrdQty.value = Math.max(0, Number(d.data.quantity || 0));
+        }
+      }
+      updateOcFreezeHint();
+    }
+  } catch (e) {}
+}
+
 // Quick order delegation on option chain table
 OC_DOM.optionChainBody.addEventListener('click', e => {
   const btn = e.target.closest('.btn-oc-buy, .btn-oc-sell');
@@ -535,12 +669,15 @@ OC_DOM.optionChainBody.addEventListener('click', e => {
   const side = btn.getAttribute('data-side');
   const ltp = Number(btn.getAttribute('data-ltp') || 0);
 
+  ocModalSpec.lotSize = lotSize;
+  ocModalSpec.ltp = ltp;
+  ocModalSpec.limitEdited = false;
+  ocModalSpec.triggerEdited = false;
   OC_DOM.ocOrdSymbol.value = symbol;
   if (OC_DOM.ocOrdToken) OC_DOM.ocOrdToken.value = token;
   OC_DOM.ocOrdSide.value = side;
   OC_DOM.ocOrdSymbolLabel.textContent = symbol;
   OC_DOM.ocOrdLtpLabel.textContent = `₹${ltp.toFixed(2)}`;
-  OC_DOM.ocOrdPrice.value = ltp.toFixed(2);
   if (OC_DOM.ocOrdQty) {
     OC_DOM.ocOrdQty.value = lotSize;
     OC_DOM.ocOrdQty.min = lotSize;
@@ -549,21 +686,60 @@ OC_DOM.optionChainBody.addEventListener('click', e => {
   if (OC_DOM.ocOrdQtyLabel) {
     OC_DOM.ocOrdQtyLabel.textContent = `Quantity (Lot Size = ${lotSize})`;
   }
+  syncOcOrderTypePricingUI(true);
   OC_DOM.ocOrderModalTitle.textContent = `${side === 'B' ? 'BUY' : 'SELL'} Option: ${symbol}`;
   OC_DOM.submitOcOrderBtn.className = side === 'B' ? 'btn-primary btn-buy' : 'btn-primary btn-sell';
   OC_DOM.submitOcOrderBtn.textContent = `Place ${side === 'B' ? 'BUY' : 'SELL'} Order`;
   OC_DOM.ocOrderModal.classList.add('active');
+  recalculateOcOrderQty();
 });
 
-OC_DOM.ocOrdType.addEventListener('change', () => {
-  OC_DOM.ocOrdPriceGroup.style.display = OC_DOM.ocOrdType.value === 'L' ? 'flex' : 'none';
-});
+if (OC_DOM.ocOrdType) {
+  OC_DOM.ocOrdType.addEventListener('change', () => {
+    ocModalSpec.limitEdited = false;
+    ocModalSpec.triggerEdited = false;
+    syncOcOrderTypePricingUI(true);
+    recalculateOcOrderQty();
+  });
+}
+if (OC_DOM.ocOrdTriggerPrice) {
+  OC_DOM.ocOrdTriggerPrice.addEventListener('input', () => {
+    ocModalSpec.triggerEdited = true;
+    const trig = Number(OC_DOM.ocOrdTriggerPrice.value || 0);
+    if (OC_DOM.ocOrdType && OC_DOM.ocOrdType.value === 'SL' && trig > 0 && !ocModalSpec.limitEdited) {
+      OC_DOM.ocOrdPrice.value = defaultOcLimitPrice(trig, OC_DOM.ocOrdSide.value).toFixed(2);
+    }
+    recalculateOcOrderQty();
+  });
+}
+if (OC_DOM.ocOrdPrice) {
+  OC_DOM.ocOrdPrice.addEventListener('input', () => {
+    ocModalSpec.limitEdited = true;
+    recalculateOcOrderQty();
+  });
+}
+if (OC_DOM.ocOrdBroker) {
+  OC_DOM.ocOrdBroker.addEventListener('change', () => {
+    try { localStorage.setItem('algo_selected_order_broker', OC_DOM.ocOrdBroker.value || ''); } catch (e) {}
+    recalculateOcOrderQty();
+  });
+}
+if (OC_DOM.ocAutoQty) {
+  OC_DOM.ocAutoQty.addEventListener('change', recalculateOcOrderQty);
+}
+if (OC_DOM.ocOrdQty) {
+  OC_DOM.ocOrdQty.addEventListener('input', () => {
+    if (OC_DOM.ocAutoQty) OC_DOM.ocAutoQty.checked = false;
+    updateOcFreezeHint();
+  });
+}
 
 OC_DOM.closeOcOrderModal.addEventListener('click', () => OC_DOM.ocOrderModal.classList.remove('active'));
 OC_DOM.cancelOcOrderBtn.addEventListener('click', () => OC_DOM.ocOrderModal.classList.remove('active'));
 
 OC_DOM.ocOrderForm.addEventListener('submit', async e => {
   e.preventDefault();
+  const ot = OC_DOM.ocOrdType.value;
   const payload = {
     accountId: OC_DOM.ocOrdBroker.value,
     tradingSymbol: OC_DOM.ocOrdSymbol.value,
@@ -571,9 +747,13 @@ OC_DOM.ocOrderForm.addEventListener('submit', async e => {
     exchangeSegment: 'nse_fo',
     transactionType: OC_DOM.ocOrdSide.value,
     product: OC_DOM.ocOrdProduct.value,
-    orderType: OC_DOM.ocOrdType.value,
+    orderType: ot,
     quantity: Number(OC_DOM.ocOrdQty.value),
-    price: OC_DOM.ocOrdType.value === 'L' ? Number(OC_DOM.ocOrdPrice.value || 0) : 0
+    lotSize: ocModalSpec.lotSize,
+    freezeQty: ocModalSpec.freezeQty,
+    price: ot === 'MKT' ? 0 : Number(OC_DOM.ocOrdPrice.value || 0),
+    triggerPrice: ot === 'SL' && OC_DOM.ocOrdTriggerPrice ? Number(OC_DOM.ocOrdTriggerPrice.value || 0) : 0,
+    ltp: ocModalSpec.ltp
   };
 
   OC_DOM.submitOcOrderBtn.disabled = true;
@@ -585,7 +765,10 @@ OC_DOM.ocOrderForm.addEventListener('submit', async e => {
     });
     const d = await res.json();
     if (d.success) {
-      showToast(`Order placed: ${payload.transactionType === 'B' ? 'BUY' : 'SELL'} ${payload.tradingSymbol} x ${payload.quantity}`, 'success');
+      const msg = d.sliced
+        ? `Order split into ${d.sliceCount} orders (Freeze ${d.freezeQty}): ${payload.transactionType === 'B' ? 'BUY' : 'SELL'} ${payload.tradingSymbol} x ${d.totalQuantity}`
+        : `Order placed: ${payload.transactionType === 'B' ? 'BUY' : 'SELL'} ${payload.tradingSymbol} x ${d.totalQuantity || payload.quantity}`;
+      showToast(msg, 'success');
       OC_DOM.ocOrderModal.classList.remove('active');
     } else {
       showToast(d.message || 'Order failed', 'error');

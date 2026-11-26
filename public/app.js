@@ -23,7 +23,9 @@ const state = {
     openPositionsCount: 0
   },
   previousLtps: new Map(),
-  previousNiftyLtp: null
+  previousNiftyLtp: null,
+  selectedBrokerAccountId: '',
+  brokerSelectSignature: ''
 };
 
 const DOM = {
@@ -34,6 +36,8 @@ const DOM = {
   topNiftyHigh: document.getElementById('topNiftyHigh'),
   topNiftyLow: document.getElementById('topNiftyLow'),
   topNiftyAtm: document.getElementById('topNiftyAtm'),
+  topContractLabel: document.getElementById('topContractLabel'),
+  topContractLtp: document.getElementById('topContractLtp'),
   topNiftyFeedPill: document.getElementById('topNiftyFeedPill'),
   topNiftyFeedStatus: document.getElementById('topNiftyFeedStatus'),
 
@@ -106,13 +110,30 @@ const DOM = {
   // Place Order Form
   orderForm: document.getElementById('orderForm'),
   orderBrokerSelect: document.getElementById('orderBrokerSelect'),
+  orderBannerSymbol: document.getElementById('orderBannerSymbol'),
+  orderBannerLtp: document.getElementById('orderBannerLtp'),
+  orderStrikeSelect: document.getElementById('orderStrikeSelect'),
+  orderResetAtmBtn: document.getElementById('orderResetAtmBtn'),
+  orderInstrumentToken: document.getElementById('orderInstrumentToken'),
+  atmCeBtn: document.getElementById('atmCeBtn'),
+  atmPeBtn: document.getElementById('atmPeBtn'),
   buyRadio: document.getElementById('buyRadio'),
   sellRadio: document.getElementById('sellRadio'),
   orderSymbol: document.getElementById('orderSymbol'),
+  orderLtpHint: document.getElementById('orderLtpHint'),
   orderSegment: document.getElementById('orderSegment'),
   orderProduct: document.getElementById('orderProduct'),
   orderType: document.getElementById('orderType'),
   orderQuantity: document.getElementById('orderQuantity'),
+  orderQtyLabel: document.getElementById('orderQtyLabel'),
+  orderAutoQty: document.getElementById('orderAutoQty'),
+  orderSizingHint: document.getElementById('orderSizingHint'),
+  orderTriggerPriceGroup: document.getElementById('orderTriggerPriceGroup'),
+  orderTriggerPrice: document.getElementById('orderTriggerPrice'),
+  orderPriceGroup: document.getElementById('orderPriceGroup'),
+  orderMarketNote: document.getElementById('orderMarketNote'),
+  orderPriceLabel: document.getElementById('orderPriceLabel'),
+  orderPriceHint: document.getElementById('orderPriceHint'),
   orderPrice: document.getElementById('orderPrice'),
   submitOrderBtn: document.getElementById('submitOrderBtn'),
 
@@ -275,6 +296,9 @@ function initEventSource() {
     try {
       const snapshot = JSON.parse(e.data);
       updateTopNiftyTicker(snapshot);
+      if (typeof syncAtmOptionOrderContext === 'function') {
+        syncAtmOptionOrderContext(snapshot);
+      }
     } catch (err) {}
   });
 
@@ -450,6 +474,20 @@ function updateModeUI(mode) {
 }
 
 function updateBrokerSelect() {
+  if (!DOM.orderBrokerSelect) return;
+  let storedId = '';
+  try { storedId = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
+  const prevSelected = DOM.orderBrokerSelect.value || state.selectedBrokerAccountId || storedId;
+  const sig = state.accounts.map(acc => `${acc.id}:${acc.name}:${acc.broker}:${acc.clientCode || ''}`).join('|');
+
+  if (DOM.orderBrokerSelect.options.length > 0 && state.brokerSelectSignature === sig) {
+    if (prevSelected && state.accounts.some(acc => acc.id === prevSelected) && DOM.orderBrokerSelect.value !== prevSelected) {
+      DOM.orderBrokerSelect.value = prevSelected;
+    }
+    return;
+  }
+  state.brokerSelectSignature = sig;
+
   DOM.orderBrokerSelect.innerHTML = '';
   state.accounts.forEach(acc => {
     const opt = document.createElement('option');
@@ -457,6 +495,15 @@ function updateBrokerSelect() {
     opt.textContent = `${acc.name} (${acc.broker.toUpperCase()}) - ${acc.clientCode || 'Active'}`;
     DOM.orderBrokerSelect.appendChild(opt);
   });
+
+  if (prevSelected && state.accounts.some(acc => acc.id === prevSelected)) {
+    DOM.orderBrokerSelect.value = prevSelected;
+  }
+  state.selectedBrokerAccountId = DOM.orderBrokerSelect.value || '';
+
+  if (typeof refreshOrderSizingFromBalance === 'function') {
+    refreshOrderSizingFromBalance();
+  }
 }
 
 async function loadPositions(force = false) {
@@ -1102,38 +1149,455 @@ DOM.toggleModeBtn.addEventListener('click', async () => {
 });
 
 // Order Placement Form
+const orderUiState = {
+  atmPref: 'CE',
+  symbolSource: 'atm', // 'atm' | 'strike' | 'custom'
+  selectedStrike: null,
+  strikeSelectSignature: '',
+  liveLtp: 0,
+  niftySnapshot: null,
+  limitEdited: false,
+  triggerEdited: false,
+  sizingSeq: 0,
+  lastSizingAt: 0
+};
+
+function roundToTickUi(val, step = 0.05) {
+  const n = Number(val || 0);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Number((Math.round(n / step) * step).toFixed(2));
+}
+
+function getDefaultLimitForSide(basePrice, side) {
+  const p = Number(basePrice || 0);
+  if (!(p > 0)) return 0;
+  const offset = side === 'S' ? -0.5 : 0.5;
+  return roundToTickUi(Math.max(0.05, p + offset));
+}
+
+function updateOrderCurrentPriceDisplay(symbol = '', ltp = 0, labelTag = '') {
+  const symText = symbol || DOM.orderSymbol.value.trim() || '--';
+  const numLtp = Number(ltp || 0);
+  const priceText = numLtp > 0 ? `₹${numLtp.toFixed(2)}` : '--';
+  if (DOM.topContractLabel) {
+    DOM.topContractLabel.textContent = labelTag ? `${labelTag}:` : `${symText}:`;
+  }
+  if (DOM.topContractLtp) {
+    DOM.topContractLtp.textContent = priceText;
+  }
+  if (DOM.orderBannerSymbol) {
+    DOM.orderBannerSymbol.textContent = symText;
+  }
+  if (DOM.orderBannerLtp) {
+    DOM.orderBannerLtp.textContent = priceText;
+  }
+}
+
+function syncOrderTypePricingUI(forceDefaults = false) {
+  const ot = DOM.orderType ? DOM.orderType.value : 'MKT';
+  const side = (DOM.sellRadio && DOM.sellRadio.checked) ? 'S' : 'B';
+  const liveLtp = Number(orderUiState.liveLtp || 0);
+
+  if (ot === 'MKT') {
+    if (DOM.orderTriggerPriceGroup) DOM.orderTriggerPriceGroup.style.display = 'none';
+    const hasLive = liveLtp > 0;
+    if (DOM.orderPriceGroup) DOM.orderPriceGroup.style.display = hasLive ? 'none' : 'block';
+    if (DOM.orderMarketNote) DOM.orderMarketNote.style.display = hasLive ? 'block' : 'none';
+    if (DOM.orderPriceLabel) DOM.orderPriceLabel.textContent = 'Reference Market LTP (₹)';
+    if (DOM.orderPriceHint) DOM.orderPriceHint.textContent = 'Market order calculates qty from live current price';
+    return;
+  }
+
+  // Never auto-modify Limit or SL Limit/Trigger textboxes from background ticks
+  if (DOM.orderMarketNote) DOM.orderMarketNote.style.display = 'none';
+  if (DOM.orderPriceGroup) DOM.orderPriceGroup.style.display = 'block';
+
+  if (ot === 'SL') {
+    if (DOM.orderTriggerPriceGroup) DOM.orderTriggerPriceGroup.style.display = 'block';
+    if (DOM.orderPriceLabel) DOM.orderPriceLabel.textContent = 'SL Limit Price (₹)';
+    if (DOM.orderPriceHint) {
+      DOM.orderPriceHint.textContent = side === 'S'
+        ? 'Default SL Limit = Trigger - 0.50 (Sell); qty sized by Limit Price'
+        : 'Default SL Limit = Trigger + 0.50 (Buy); qty sized by Limit Price';
+    }
+    if (forceDefaults) {
+      if (DOM.orderTriggerPrice && liveLtp > 0 && !orderUiState.triggerEdited) {
+        DOM.orderTriggerPrice.value = roundToTickUi(liveLtp).toFixed(2);
+      }
+      const trig = Number((DOM.orderTriggerPrice && DOM.orderTriggerPrice.value) || liveLtp || 0);
+      if (DOM.orderPrice && trig > 0 && !orderUiState.limitEdited) {
+        DOM.orderPrice.value = getDefaultLimitForSide(trig, side).toFixed(2);
+      }
+    }
+    return;
+  }
+
+  // Limit order ('L')
+  if (DOM.orderTriggerPriceGroup) DOM.orderTriggerPriceGroup.style.display = 'none';
+  if (DOM.orderPriceLabel) DOM.orderPriceLabel.textContent = 'Limit Price (₹)';
+  if (DOM.orderPriceHint) {
+    DOM.orderPriceHint.textContent = side === 'S'
+      ? 'Default Limit = LTP - 0.50 (Sell); qty calculates from entered Limit Price'
+      : 'Default Limit = LTP + 0.50 (Buy); qty calculates from entered Limit Price';
+  }
+  if (forceDefaults && DOM.orderPrice && liveLtp > 0 && !orderUiState.limitEdited) {
+    DOM.orderPrice.value = getDefaultLimitForSide(liveLtp, side).toFixed(2);
+  }
+}
+
+function getOptionLegFromSnapshot(snap, optType = 'CE', targetStrike = null) {
+  if (!snap || !Array.isArray(snap.strikes) || snap.strikes.length === 0) return null;
+  let row = null;
+  if (targetStrike !== null && targetStrike !== undefined && Number(targetStrike) > 0) {
+    row = snap.strikes.find(r => Number(r.strike) === Number(targetStrike));
+  }
+  if (!row) {
+    row = snap.strikes.find(r => r.isAtm || r.strike === snap.atmStrike) ||
+      snap.strikes[Math.floor(snap.strikes.length / 2)];
+  }
+  if (!row) return null;
+  const leg = optType === 'PE' ? row.pe : row.ce;
+  return leg ? { row, leg } : null;
+}
+
+function populateStrikeSelect(snap) {
+  if (!DOM.orderStrikeSelect || !snap || !Array.isArray(snap.strikes) || snap.strikes.length === 0) return;
+  const strikesSig = snap.strikes.map(r => `${r.strike}:${r.isAtm ? 1 : 0}`).join('|');
+  const formatOptLabel = row => {
+    const tag = row.isAtm ? ' (ATM)' : (row.moneynessLabel ? ` (${row.moneynessLabel})` : '');
+    const ceLtp = row.ce && Number(row.ce.ltp) > 0 ? `CE ₹${Number(row.ce.ltp).toFixed(1)}` : 'CE --';
+    const peLtp = row.pe && Number(row.pe.ltp) > 0 ? `PE ₹${Number(row.pe.ltp).toFixed(1)}` : 'PE --';
+    return `${row.strike}${tag} — ${ceLtp} | ${peLtp}`;
+  };
+
+  if (DOM.orderStrikeSelect.options.length !== snap.strikes.length || orderUiState.strikeSelectSignature !== strikesSig) {
+    orderUiState.strikeSelectSignature = strikesSig;
+    DOM.orderStrikeSelect.innerHTML = '';
+    snap.strikes.forEach(row => {
+      const opt = document.createElement('option');
+      opt.value = String(row.strike);
+      opt.textContent = formatOptLabel(row);
+      DOM.orderStrikeSelect.appendChild(opt);
+    });
+  } else {
+    snap.strikes.forEach((row, idx) => {
+      const opt = DOM.orderStrikeSelect.options[idx];
+      if (opt) opt.textContent = formatOptLabel(row);
+    });
+  }
+
+  const desiredStrike = (orderUiState.symbolSource === 'strike' && orderUiState.selectedStrike)
+    ? String(orderUiState.selectedStrike)
+    : String(snap.atmStrike || snap.strikes[Math.floor(snap.strikes.length / 2)].strike);
+  if (DOM.orderStrikeSelect.value !== desiredStrike && Array.from(DOM.orderStrikeSelect.options).some(o => o.value === desiredStrike)) {
+    DOM.orderStrikeSelect.value = desiredStrike;
+  }
+}
+
+function applySelectedOptionContract(snap, userChanged = false) {
+  if (DOM.atmCeBtn) DOM.atmCeBtn.classList.toggle('active', orderUiState.atmPref === 'CE');
+  if (DOM.atmPeBtn) DOM.atmPeBtn.classList.toggle('active', orderUiState.atmPref === 'PE');
+  const targetStrike = orderUiState.symbolSource === 'strike' ? orderUiState.selectedStrike : null;
+  const matched = getOptionLegFromSnapshot(snap, orderUiState.atmPref, targetStrike);
+  if (!matched || !matched.leg) return;
+
+  const { row, leg } = matched;
+  const curSym = (DOM.orderSymbol.value || '').trim().toUpperCase();
+  const symbolChanged = Boolean(leg.symbol && curSym !== leg.symbol.toUpperCase());
+
+  if (userChanged || symbolChanged) {
+    orderUiState.limitEdited = false;
+    orderUiState.triggerEdited = false;
+  }
+
+  DOM.orderSymbol.value = leg.symbol || '';
+  if (DOM.orderInstrumentToken) DOM.orderInstrumentToken.value = leg.instrumentToken || '';
+  DOM.orderSegment.value = 'nse_fo';
+  if (Number(leg.ltp) > 0) {
+    orderUiState.liveLtp = Number(leg.ltp);
+  }
+  if (DOM.orderStrikeSelect && Array.from(DOM.orderStrikeSelect.options).some(o => o.value === String(row.strike))) {
+    DOM.orderStrikeSelect.value = String(row.strike);
+  }
+
+  const tagLabel = `${row.isAtm ? 'ATM' : row.strike} ${orderUiState.atmPref}`;
+  updateOrderCurrentPriceDisplay(leg.symbol, orderUiState.liveLtp, tagLabel);
+  if (DOM.orderLtpHint) {
+    DOM.orderLtpHint.textContent = `${row.strike}${row.isAtm ? ' (ATM)' : ''} ${orderUiState.atmPref} • Live LTP: ${orderUiState.liveLtp > 0 ? '₹' + orderUiState.liveLtp.toFixed(2) : '--'}`;
+  }
+
+  const ot = DOM.orderType ? DOM.orderType.value : 'MKT';
+  if (userChanged || ot === 'MKT') {
+    syncOrderTypePricingUI(userChanged);
+  }
+  const nowMs = Date.now();
+  if (userChanged || symbolChanged || (ot === 'MKT' && (nowMs - orderUiState.lastSizingAt) >= 1500)) {
+    refreshOrderSizingFromBalance();
+  }
+}
+
+function selectAtmOption(optType, userClicked = false, resetToAtm = false) {
+  orderUiState.atmPref = optType === 'PE' ? 'PE' : 'CE';
+  if (resetToAtm || orderUiState.symbolSource === 'custom') {
+    orderUiState.symbolSource = 'atm';
+    orderUiState.selectedStrike = null;
+  }
+  applySelectedOptionContract(orderUiState.niftySnapshot, userClicked);
+}
+
+function syncAtmOptionOrderContext(snapshot) {
+  if (!snapshot) return;
+  orderUiState.niftySnapshot = snapshot;
+  populateStrikeSelect(snapshot);
+  const curSym = (DOM.orderSymbol.value || '').trim().toUpperCase();
+
+  if (orderUiState.symbolSource === 'atm' || orderUiState.symbolSource === 'strike' || !curSym) {
+    applySelectedOptionContract(snapshot, false);
+  } else if (Array.isArray(snapshot.strikes)) {
+    for (const row of snapshot.strikes) {
+      for (const leg of [row.ce, row.pe]) {
+        if (leg && String(leg.symbol || '').trim().toUpperCase() === curSym && Number(leg.ltp) > 0) {
+          orderUiState.liveLtp = Number(leg.ltp);
+          updateOrderCurrentPriceDisplay(leg.symbol, orderUiState.liveLtp, `${row.strike} ${leg.optionType || ''}`.trim());
+          if (DOM.orderLtpHint) {
+            DOM.orderLtpHint.textContent = `${leg.symbol} • Live LTP: ₹${orderUiState.liveLtp.toFixed(2)}`;
+          }
+          const ot = DOM.orderType ? DOM.orderType.value : 'MKT';
+          if (ot === 'MKT') {
+            syncOrderTypePricingUI(false);
+            if ((Date.now() - orderUiState.lastSizingAt) >= 1500) {
+              refreshOrderSizingFromBalance();
+            }
+          }
+          break;
+        }
+      }
+    }
+  }
+}
+
 DOM.buyRadio.addEventListener('change', () => {
   DOM.submitOrderBtn.className = 'btn-primary-large btn-buy';
   DOM.submitOrderBtn.querySelector('span').textContent = 'PLACE BUY ORDER';
+  orderUiState.limitEdited = false;
+  syncOrderTypePricingUI(true);
+  refreshOrderSizingFromBalance();
 });
 DOM.sellRadio.addEventListener('change', () => {
   DOM.submitOrderBtn.className = 'btn-primary-large btn-sell';
   DOM.submitOrderBtn.querySelector('span').textContent = 'PLACE SELL ORDER';
+  orderUiState.limitEdited = false;
+  syncOrderTypePricingUI(true);
+  refreshOrderSizingFromBalance();
 });
+
+if (DOM.atmCeBtn) DOM.atmCeBtn.addEventListener('click', () => selectAtmOption('CE', true, false));
+if (DOM.atmPeBtn) DOM.atmPeBtn.addEventListener('click', () => selectAtmOption('PE', true, false));
+if (DOM.orderResetAtmBtn) {
+  DOM.orderResetAtmBtn.addEventListener('click', () => selectAtmOption(orderUiState.atmPref, true, true));
+}
+if (DOM.orderStrikeSelect) {
+  DOM.orderStrikeSelect.addEventListener('change', () => {
+    const picked = Number(DOM.orderStrikeSelect.value || 0);
+    if (picked > 0) {
+      orderUiState.symbolSource = 'strike';
+      orderUiState.selectedStrike = picked;
+      applySelectedOptionContract(orderUiState.niftySnapshot, true);
+    }
+  });
+}
 
 document.querySelectorAll('.chip').forEach(c => {
   c.addEventListener('click', () => {
+    const atmOpt = c.getAttribute('data-atm-opt');
+    if (atmOpt) {
+      selectAtmOption(atmOpt, true, true);
+      return;
+    }
+    orderUiState.symbolSource = 'custom';
+    orderUiState.selectedStrike = null;
+    orderUiState.liveLtp = 0;
+    orderUiState.limitEdited = false;
+    orderUiState.triggerEdited = false;
     DOM.orderSymbol.value = c.getAttribute('data-symbol');
     DOM.orderSegment.value = c.getAttribute('data-segment');
+    if (DOM.orderInstrumentToken) DOM.orderInstrumentToken.value = '';
+    updateOrderCurrentPriceDisplay(DOM.orderSymbol.value, 0, DOM.orderSymbol.value);
+    if (DOM.orderLtpHint) DOM.orderLtpHint.textContent = 'Live LTP: -- (enter price or LTP)';
+    syncOrderTypePricingUI(true);
+    refreshOrderSizingFromBalance();
   });
 });
 document.querySelectorAll('.chip-qty').forEach(c => {
   c.addEventListener('click', () => {
+    if (DOM.orderAutoQty) DOM.orderAutoQty.checked = false;
     DOM.orderQuantity.value = Number(DOM.orderQuantity.value || 0) + Number(c.getAttribute('data-qty'));
+    updateOrderFreezePreview();
   });
 });
 
+let lastOrderSpec = { lotSize: 65, freezeQty: 0, availableCash: 0 };
+
+function updateOrderFreezePreview() {
+  if (!DOM.orderSizingHint) return;
+  const qty = Math.round(Number(DOM.orderQuantity.value || 0));
+  const fq = Number(lastOrderSpec.freezeQty || 0);
+  const lot = Number(lastOrderSpec.lotSize || 1);
+  const bal = Number(lastOrderSpec.availableCash || 0);
+  const rate = Number(lastOrderSpec.price || 0);
+  const maxSlice = fq > 0 ? Math.max(lot, Math.floor(fq / lot) * lot) : 0;
+  const sliceCount = (fq > 0 && qty > fq) ? Math.ceil(qty / maxSlice) : (qty > 0 ? 1 : 0);
+  const splitStr = sliceCount > 1 ? ` • Auto-splits into ${sliceCount} orders (max ${maxSlice}/order)` : '';
+  const insuffStr = (DOM.orderAutoQty && DOM.orderAutoQty.checked && rate > 0 && qty === 0)
+    ? ` • Need ₹${(lot * rate).toFixed(2)} for 1 lot`
+    : '';
+  const rateStr = rate > 0 ? ` | Rate: ₹${rate.toFixed(2)}` : '';
+  DOM.orderSizingHint.textContent = `Balance: ₹${bal.toLocaleString('en-IN')}${rateStr} | Lot: ${lot} | Freeze: ${fq > 0 ? fq : 'None'}${splitStr}${insuffStr}`;
+}
+
+async function refreshOrderSizingFromBalance() {
+  const seq = ++orderUiState.sizingSeq;
+  try {
+    const symbol = DOM.orderSymbol.value.trim();
+    const accountId = DOM.orderBrokerSelect ? DOM.orderBrokerSelect.value : '';
+    if (!symbol || !accountId) return;
+    orderUiState.lastSizingAt = Date.now();
+    const ot = DOM.orderType ? DOM.orderType.value : 'MKT';
+    const side = (DOM.sellRadio && DOM.sellRadio.checked) ? 'S' : 'B';
+    const enteredPrice = Number(DOM.orderPrice.value || 0);
+    const triggerPrice = Number((DOM.orderTriggerPrice && DOM.orderTriggerPrice.value) || 0);
+    const ltp = Number(orderUiState.liveLtp || 0) || (ot === 'MKT' ? enteredPrice : 0);
+
+    const res = await fetch('/api/orders/calculate-quantity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId,
+        tradingSymbol: symbol,
+        instrumentToken: DOM.orderInstrumentToken ? DOM.orderInstrumentToken.value : '',
+        exchangeSegment: DOM.orderSegment.value,
+        orderType: ot,
+        transactionType: side,
+        price: ot === 'MKT' ? 0 : enteredPrice,
+        triggerPrice: ot === 'SL' ? triggerPrice : 0,
+        ltp
+      })
+    });
+    const d = await res.json();
+    if (seq !== orderUiState.sizingSeq) return;
+    if (d.success && d.data) {
+      lastOrderSpec = d.data;
+      const lot = Math.max(1, Number(d.data.lotSize || 1));
+      if (Number(d.data.ltp) > 0 && !(orderUiState.liveLtp > 0)) {
+        orderUiState.liveLtp = Number(d.data.ltp);
+      }
+      if (DOM.orderQtyLabel) {
+        DOM.orderQtyLabel.textContent = `Quantity (Lot = ${lot})`;
+      }
+      // Keep min === step so HTML5 number validation aligns cleanly to lot multiples (e.g. 65, 130, 325)
+      DOM.orderQuantity.min = lot;
+      DOM.orderQuantity.step = lot;
+      if (DOM.orderAutoQty && DOM.orderAutoQty.checked) {
+        DOM.orderQuantity.value = Math.max(0, Number(d.data.quantity || 0));
+      } else {
+        const cur = Number(DOM.orderQuantity.value || 0);
+        if (!(cur > 0) || cur % lot !== 0) {
+          DOM.orderQuantity.value = Math.max(lot, Math.floor(cur / lot) * lot || lot);
+        }
+      }
+      updateOrderFreezePreview();
+    }
+  } catch (e) {}
+}
+
+if (DOM.orderType) {
+  DOM.orderType.addEventListener('change', () => {
+    orderUiState.limitEdited = false;
+    orderUiState.triggerEdited = false;
+    syncOrderTypePricingUI(true);
+    refreshOrderSizingFromBalance();
+  });
+}
+if (DOM.orderTriggerPrice) {
+  DOM.orderTriggerPrice.addEventListener('input', () => {
+    orderUiState.triggerEdited = true;
+    const side = (DOM.sellRadio && DOM.sellRadio.checked) ? 'S' : 'B';
+    const trig = Number(DOM.orderTriggerPrice.value || 0);
+    if (DOM.orderType && DOM.orderType.value === 'SL' && trig > 0 && !orderUiState.limitEdited) {
+      DOM.orderPrice.value = getDefaultLimitForSide(trig, side).toFixed(2);
+    }
+    refreshOrderSizingFromBalance();
+  });
+}
+if (DOM.orderPrice) {
+  DOM.orderPrice.addEventListener('input', () => {
+    if (!DOM.orderType || DOM.orderType.value !== 'MKT') {
+      orderUiState.limitEdited = true;
+    }
+    refreshOrderSizingFromBalance();
+  });
+}
+if (DOM.orderSymbol) {
+  DOM.orderSymbol.addEventListener('input', () => {
+    orderUiState.symbolSource = 'custom';
+    orderUiState.selectedStrike = null;
+    orderUiState.liveLtp = 0;
+    updateOrderCurrentPriceDisplay(DOM.orderSymbol.value.trim(), 0, DOM.orderSymbol.value.trim());
+    syncOrderTypePricingUI(false);
+    refreshOrderSizingFromBalance();
+  });
+}
+if (DOM.orderBrokerSelect) {
+  DOM.orderBrokerSelect.addEventListener('change', () => {
+    state.selectedBrokerAccountId = DOM.orderBrokerSelect.value || '';
+    try { localStorage.setItem('algo_selected_order_broker', state.selectedBrokerAccountId); } catch (e) {}
+    refreshOrderSizingFromBalance();
+  });
+}
+[DOM.orderSegment, DOM.orderAutoQty].forEach(el => {
+  if (!el) return;
+  el.addEventListener('change', refreshOrderSizingFromBalance);
+});
+if (DOM.orderQuantity) {
+  DOM.orderQuantity.addEventListener('input', () => {
+    if (DOM.orderAutoQty) DOM.orderAutoQty.checked = false;
+    updateOrderFreezePreview();
+  });
+}
+
+// Fetch initial live ATM CE/PE context on startup
+fetch('/api/nifty-feed').then(r => r.json()).then(d => {
+  if (d && d.success && d.data) {
+    syncAtmOptionOrderContext(d.data);
+  }
+}).catch(() => {});
+
 DOM.orderForm.addEventListener('submit', async e => {
   e.preventDefault();
+  const ot = DOM.orderType.value;
+  const side = DOM.buyRadio.checked ? 'B' : 'S';
+  const enteredPrice = Number(DOM.orderPrice.value || 0);
+  const triggerPrice = Number((DOM.orderTriggerPrice && DOM.orderTriggerPrice.value) || 0);
+  const lot = Math.max(1, Number(lastOrderSpec.lotSize || 1));
+  let qtyVal = Math.round(Number(DOM.orderQuantity.value || 0));
+  if (qtyVal > 0 && lot > 1 && qtyVal % lot !== 0) {
+    qtyVal = Math.max(lot, Math.round(qtyVal / lot) * lot);
+    DOM.orderQuantity.value = qtyVal;
+  }
+
   const payload = {
     accountId: DOM.orderBrokerSelect.value,
     tradingSymbol: DOM.orderSymbol.value.trim(),
+    instrumentToken: DOM.orderInstrumentToken ? DOM.orderInstrumentToken.value : '',
     exchangeSegment: DOM.orderSegment.value,
-    transactionType: DOM.buyRadio.checked ? 'B' : 'S',
+    transactionType: side,
     product: DOM.orderProduct.value,
-    orderType: DOM.orderType.value,
-    quantity: Number(DOM.orderQuantity.value),
-    price: Number(DOM.orderPrice.value || 0)
+    orderType: ot,
+    quantity: qtyVal,
+    autoQuantity: Boolean(DOM.orderAutoQty && DOM.orderAutoQty.checked && !(qtyVal > 0)),
+    price: ot === 'MKT' ? 0 : enteredPrice,
+    triggerPrice: ot === 'SL' ? triggerPrice : 0,
+    ltp: Number(orderUiState.liveLtp || enteredPrice || 0)
   };
 
   DOM.submitOrderBtn.disabled = true;
@@ -1145,7 +1609,10 @@ DOM.orderForm.addEventListener('submit', async e => {
     });
     const d = await res.json();
     if (d.success) {
-      showToast(`Order executed on broker! ID: ${d.orderId}`, 'success');
+      const msg = d.sliced
+        ? `Order split into ${d.sliceCount} orders (Freeze ${d.freezeQty})! Total Qty: ${d.totalQuantity} • IDs: ${(d.orderIds || []).join(', ')}`
+        : `Order executed on broker! Qty: ${d.totalQuantity || payload.quantity} • ID: ${d.orderId}`;
+      showToast(msg, 'success');
       loadPositions();
       loadOrders();
     } else {

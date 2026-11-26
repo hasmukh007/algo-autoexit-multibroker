@@ -16,6 +16,12 @@ const {
   buildChartAnalysis
 } = require('../lib/niftyChartAnalysis');
 const AutoLoginScheduler = require('../lib/autoLoginScheduler');
+const {
+  ScripMasterManager,
+  splitQuantityByFreeze,
+  calculateOrderQuantity,
+  resolveOrderTypePricing
+} = require('../lib/scripMasterManager');
 const AngelOneBroker = require('../lib/brokers/angelOneBroker');
 const KotakNeoBroker = require('../lib/brokers/kotakNeoBroker');
 const DhanBroker = require('../lib/brokers/dhanBroker');
@@ -885,6 +891,253 @@ async function run() {
   assert(fullAnalysis.timeframes['5m'].latestResistance && fullAnalysis.timeframes['5m'].latestSupport, '5m HA should detect both >2G resistance and >2R support');
   console.log('   ✅ Chart analysis computes session vertical lines, PDH/PDL, Pivot Points, and 5m/15m/1h Heikin-Ashi S/R zones.');
 
+  // 2h. ScripMasterManager 08:55 AM IST Scheduler, Freeze Splitting & Balance-Based Auto-Qty
+  const testScripDbPath = path.join(__dirname, '..', 'data', 'test_scrip_tmp.db');
+  for (const suffix of ['', '-wal', '-shm']) {
+    if (fs.existsSync(testScripDbPath + suffix)) fs.unlinkSync(testScripDbPath + suffix);
+  }
+  const origFetchScrip = global.fetch;
+  let scripMgr;
+  try {
+    let dlCalls = 0;
+    global.fetch = async url => {
+      dlCalls++;
+      if (url.includes('instruments.csv')) {
+        const csv = [
+          'id,isin,symbol,company_name,series,underlying_symbol,exchange,segment,token,instrument_type,option_type,expiry_date,strike_price,lot_size,tick_size,freeze_quantity,price_precision,price_multiplier',
+          '1914891,,NIFTY27OCT26C25000,,,NIFTY,NSE,NFO,51440,OPTIDX,CE,27-10-2026,25000.00,65,0.05,1800,2,1'
+        ].join('\n');
+        return { ok: true, status: 200, text: async () => csv };
+      }
+      if (url.includes('OpenAPIScripMaster.json')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify([{
+            symbol: 'NIFTY26NOV2624800CE',
+            exch_seg: 'NFO',
+            token: '72314',
+            name: 'NIFTY',
+            instrumenttype: 'OPTIDX',
+            lotsize: '65'
+          }])
+        };
+      }
+      return { ok: true, status: 200, text: async () => '' };
+    };
+
+    scripMgr = new ScripMasterManager({ dbPath: testScripDbPath, disableTimers: true });
+    assert.strictEqual((await scripMgr._checkAndTrigger(makeISTDate(2026, 11, 26, 8, 54))).triggered, false, 'Must NOT download scrip master before 08:55 AM IST');
+    const dl855 = await scripMgr._checkAndTrigger(makeISTDate(2026, 11, 26, 8, 55));
+    assert.strictEqual(dl855.triggered, true, 'Must download scrip master at 08:55 AM IST');
+    assert.strictEqual((await scripMgr._checkAndTrigger(makeISTDate(2026, 11, 26, 9, 5))).triggered, false, 'Must not re-download same day');
+
+    const sahiSpec = scripMgr.getContractSpec({ symbol: 'NIFTY27OCT26C25000', exchangeSegment: 'NFO' });
+    assert.strictEqual(sahiSpec.lotSize, 65);
+    assert.strictEqual(sahiSpec.freezeQty, 1800);
+
+    const angelSpec = scripMgr.getContractSpec({ symbol: 'NIFTY26NOV2624800CE', exchangeSegment: 'NFO' });
+    assert.strictEqual(angelSpec.lotSize, 65);
+    assert.strictEqual(angelSpec.freezeQty, 1800, 'Angel contract must inherit NIFTY freezeQty from ScripMaster');
+
+    assert.deepStrictEqual(splitQuantityByFreeze(3705, 1800, 65), [1755, 1755, 195]);
+    assert.deepStrictEqual(splitQuantityByFreeze(1300, 1800, 65), [1300]);
+
+    const sized = calculateOrderQuantity({ availableCash: 100000, price: 150, lotSize: 65, freezeQty: 1800 });
+    assert.strictEqual(sized.lots, 10);
+    assert.strictEqual(sized.quantity, 650);
+    assert.deepStrictEqual(sized.slices, [650]);
+
+    const largeSized = calculateOrderQuantity({ availableCash: 500000, price: 150, lotSize: 65, freezeQty: 1800 });
+    assert.strictEqual(largeSized.quantity, 3315); // floor(500000/150)=3333 -> 51 lots * 65 = 3315
+    assert.deepStrictEqual(largeSized.slices, [1755, 1560]);
+
+    // Test MultiBrokerManager.placeOrder freeze splitting + autoQuantity
+    const mgrSplit = new MultiBrokerManager({ loadConfig: () => ({ mode: 'live' }) }, { scripMasterManager: scripMgr });
+    for (const inst of mgrSplit.brokerInstances.values()) {
+      if (typeof inst.disconnect === 'function') inst.disconnect();
+    }
+    const placedSlices = [];
+    const mockLiveBroker = {
+      id: 'live_test_1',
+      broker: 'kotakneo',
+      isMock: false,
+      isAuthenticated: true,
+      getFunds: async () => ({ availableCash: 100000, utilizedMargin: 0, totalBalance: 100000 }),
+      placeOrder: async ord => {
+        placedSlices.push(ord.quantity);
+        return { success: true, orderId: 'ORD-' + placedSlices.length };
+      },
+      disconnect: () => {}
+    };
+    mgrSplit.brokerInstances.set('live_test_1', mockLiveBroker);
+
+    const splitRes = await mgrSplit.placeOrder({
+      accountId: 'live_test_1',
+      tradingSymbol: 'NIFTY27OCT26C25000',
+      exchangeSegment: 'NFO',
+      transactionType: 'B',
+      orderType: 'MKT',
+      quantity: 3705
+    });
+    assert.strictEqual(splitRes.sliced, true);
+    assert.strictEqual(splitRes.sliceCount, 3);
+    assert.deepStrictEqual(placedSlices, [1755, 1755, 195]);
+
+    placedSlices.length = 0;
+    const autoRes = await mgrSplit.placeOrder({
+      accountId: 'live_test_1',
+      tradingSymbol: 'NIFTY27OCT26C25000',
+      exchangeSegment: 'NFO',
+      transactionType: 'B',
+      orderType: 'L',
+      price: 150,
+      autoQuantity: true
+    });
+    assert.strictEqual(autoRes.totalQuantity, 650);
+    assert.deepStrictEqual(placedSlices, [650]);
+
+    // Test order-type-aware pricing (+0.5 Buy / -0.5 Sell, MKT=LTP, L=Limit, SL=Trigger+Limit)
+    const mktPricing = resolveOrderTypePricing({ orderType: 'MKT', transactionType: 'B', ltp: 142.35 });
+    assert.strictEqual(mktPricing.sizingPrice, 142.35);
+    assert.strictEqual(mktPricing.orderPrice, 0);
+
+    const limitBuyDefault = resolveOrderTypePricing({ orderType: 'L', transactionType: 'B', ltp: 120 });
+    assert.strictEqual(limitBuyDefault.orderPrice, 120.5);
+    assert.strictEqual(limitBuyDefault.sizingPrice, 120.5);
+
+    const limitSellDefault = resolveOrderTypePricing({ orderType: 'L', transactionType: 'S', ltp: 120 });
+    assert.strictEqual(limitSellDefault.orderPrice, 119.5);
+    assert.strictEqual(limitSellDefault.sizingPrice, 119.5);
+
+    const slBuyDefault = resolveOrderTypePricing({ orderType: 'SL', transactionType: 'B', triggerPrice: 150 });
+    assert.strictEqual(slBuyDefault.triggerPrice, 150);
+    assert.strictEqual(slBuyDefault.orderPrice, 150.5);
+    assert.strictEqual(slBuyDefault.sizingPrice, 150.5);
+
+    const slSellDefault = resolveOrderTypePricing({ orderType: 'SL', transactionType: 'S', triggerPrice: 150 });
+    assert.strictEqual(slSellDefault.triggerPrice, 150);
+    assert.strictEqual(slSellDefault.orderPrice, 149.5);
+    assert.strictEqual(slSellDefault.sizingPrice, 149.5);
+
+    const calcMkt = calculateOrderQuantity({
+      availableCash: 50000,
+      orderType: 'MKT',
+      transactionType: 'B',
+      price: 0,
+      ltp: 125,
+      lotSize: 65,
+      freezeQty: 1800
+    });
+    assert.strictEqual(calcMkt.price, 125);
+    assert.strictEqual(calcMkt.quantity, Math.floor(Math.floor(50000 / 125) / 65) * 65);
+
+    const calcLimit = calculateOrderQuantity({
+      availableCash: 50000,
+      orderType: 'L',
+      transactionType: 'B',
+      price: 100,
+      ltp: 125,
+      lotSize: 65,
+      freezeQty: 1800
+    });
+    assert.strictEqual(calcLimit.price, 100);
+    assert.strictEqual(calcLimit.orderPrice, 100);
+    assert.strictEqual(calcLimit.quantity, Math.floor(Math.floor(50000 / 100) / 65) * 65);
+
+    const calcSl = calculateOrderQuantity({
+      availableCash: 50000,
+      orderType: 'SL',
+      transactionType: 'B',
+      triggerPrice: 150,
+      price: 150.5,
+      lotSize: 65,
+      freezeQty: 1800
+    });
+    assert.strictEqual(calcSl.triggerPrice, 150);
+    assert.strictEqual(calcSl.orderPrice, 150.5);
+    assert.strictEqual(calcSl.quantity, Math.floor(Math.floor(50000 / 150.5) / 65) * 65);
+
+    // Test AngelOneBroker & DhanBroker placeOrder SL/NFO mapping using mocked fetch
+    let angelBodySent = null;
+    let dhanBodySent = null;
+    global.fetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.includes('apiconnect.angelone.in')) {
+        angelBodySent = JSON.parse(init.body || '{}');
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ status: true, data: { orderid: 'ANG-SL-1' } })
+        };
+      }
+      if (u.includes('api.dhan.co')) {
+        dhanBodySent = JSON.parse(init.body || '{}');
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ orderId: 'DHN-SL-1', orderStatus: 'TRANSIT' })
+        };
+      }
+      return origFetchScrip(url, init);
+    };
+
+    const angelPlaceTest = new AngelOneBroker({
+      id: 'ang_sl_1',
+      apiKey: 'ak',
+      clientCode: 'CC1'
+    });
+    angelPlaceTest.jwtToken = 'jwt_test';
+    angelPlaceTest.isAuthenticated = true;
+    angelPlaceTest.scheduleTradeRefresh = () => {};
+    const angSlRes = await angelPlaceTest.placeOrder({
+      tradingSymbol: 'NIFTY27OCT2625000CE',
+      symbolToken: '99999',
+      exchangeSegment: 'nse_fo',
+      transactionType: 'B',
+      orderType: 'SL',
+      product: 'NRML',
+      quantity: 325,
+      price: 150.5,
+      triggerPrice: 150
+    });
+    assert.strictEqual(angSlRes.success, true);
+    assert.strictEqual(angelBodySent.exchange, 'NFO');
+    assert.strictEqual(angelBodySent.ordertype, 'STOPLOSS_LIMIT');
+    assert.strictEqual(angelBodySent.price, '150.5');
+    assert.strictEqual(angelBodySent.triggerprice, '150');
+
+    const dhanPlaceTest = new DhanBroker({
+      id: 'dhn_sl_1',
+      clientId: 'DH1',
+      accessToken: 'tok_test'
+    });
+    dhanPlaceTest.scheduleTradeRefresh = () => {};
+    const dhanSlRes = await dhanPlaceTest.placeOrder({
+      tradingSymbol: 'NIFTY27OCT2625000CE',
+      securityId: '88888',
+      exchangeSegment: 'nse_fo',
+      transactionType: 'B',
+      orderType: 'SL',
+      product: 'NRML',
+      quantity: 325,
+      price: 150.5,
+      triggerPrice: 150
+    });
+    assert.strictEqual(dhanSlRes.success, true);
+    assert.strictEqual(dhanBodySent.orderType, 'STOP_LOSS');
+    assert.strictEqual(dhanBodySent.price, 150.5);
+    assert.strictEqual(dhanBodySent.triggerPrice, 150);
+
+    console.log('   ✅ ScripMasterManager loads lotSize/freezeQty at 08:55 AM IST, auto-sizes from balance, and splits orders > freeze.');
+  } finally {
+    if (scripMgr) scripMgr.close();
+    global.fetch = origFetchScrip;
+    for (const suffix of ['', '-wal', '-shm']) {
+      if (fs.existsSync(testScripDbPath + suffix)) fs.unlinkSync(testScripDbPath + suffix);
+    }
+  }
+
   // 2b. KotakNeoClient baseUrl migration & login header checks
   const kotakLegacy = new KotakNeoClient({
     baseUrl: 'https://napi.kotaksecurities.com',
@@ -1151,6 +1404,20 @@ async function run() {
     assert(homeRes.body.includes('topNiftyLtp'));
     assert(homeRes.body.includes('/option-chain'));
     assert(homeRes.body.includes('/chart'));
+    assert(homeRes.body.includes('min="65" step="65"'), 'Order quantity input must set min="65" and step="65" so multiples like 325 pass validation');
+    assert(homeRes.body.includes('atmCeBtn') && homeRes.body.includes('atmPeBtn'), 'Dashboard must expose ATM CE / ATM PE default selector');
+    assert(homeRes.body.includes('orderTriggerPrice'), 'Dashboard must expose SL Trigger Price input');
+    assert(homeRes.body.includes('topContractLtp') && homeRes.body.includes('orderBannerLtp'), 'Dashboard must show current price at top of window and order panel');
+    assert(homeRes.body.includes('orderStrikeSelect') && homeRes.body.includes('orderResetAtmBtn'), 'Dashboard must expose Strike Price selector for Call/Put');
+    const appJsRes = await httpRequest(testPort, '/app.js');
+    assert.strictEqual(appJsRes.status, 200);
+    assert(appJsRes.body.includes('brokerSelectSignature') && appJsRes.body.includes('algo_selected_order_broker'), 'updateBrokerSelect must preserve user-selected broker across SSE ticks');
+    assert(appJsRes.body.includes('sizingSeq') && appJsRes.body.includes('Math.max(0, Number(d.data.quantity || 0))'), 'refreshOrderSizingFromBalance must guard stale async responses and update zero-qty cleanly');
+    assert(appJsRes.body.includes('populateStrikeSelect') && appJsRes.body.includes('updateOrderCurrentPriceDisplay'), 'app.js must populate strike selector and update top current price display');
+    assert(appJsRes.body.includes('if (userChanged || ot === \'MKT\')'), 'Live ticks must NOT overwrite Limit or SL Limit/Trigger price textboxes');
+    const ocJsRes = await httpRequest(testPort, '/option-chain.js');
+    assert.strictEqual(ocJsRes.status, 200);
+    assert(ocJsRes.body.includes('algo_selected_order_broker') && ocJsRes.body.includes('sizingSeq'), 'option-chain.js must preserve broker selection and guard async sizing');
     console.log('   ✅ GET / serves terminal with live top NIFTY ticker, Option Chain, and Chart links.');
 
     const ocRes = await httpRequest(testPort, '/option-chain');
@@ -1158,6 +1425,7 @@ async function run() {
     assert(ocRes.body.includes('optionChainTable'));
     assert(ocRes.body.includes('<th>OI Built Up</th>'));
     assert(ocRes.body.includes('NIFTY Lot = 65'), 'Option chain modal must default to NIFTY lot size 65');
+    assert(ocRes.body.includes('ocOrdTriggerPrice') && ocRes.body.includes('value="SL"'), 'Option chain modal must expose SL Trigger Price & Limit Price controls');
     assert(!ocRes.body.includes('<th>Side</th>'));
     console.log('   ✅ GET /option-chain serves live-only Option Chain page with OI Built Up & NIFTY Lot = 65.');
 
@@ -1215,6 +1483,56 @@ async function run() {
     const testSahiCredsJson = JSON.parse(testSahiCredsRes.body);
     assert.strictEqual(testSahiCredsRes.status, 200);
     assert.strictEqual(typeof testSahiCredsJson.message, 'string');
+
+    const scripStatusRes = await httpRequest(testPort, '/api/scrip-master/status');
+    assert.strictEqual(scripStatusRes.status, 200);
+    assert.strictEqual(JSON.parse(scripStatusRes.body).data.scheduledTimeIST, '08:55 IST');
+
+    const scripLookupRes = await httpRequest(testPort, '/api/scrip-master/lookup?symbol=NIFTY27OCT26C25000&segment=NFO');
+    assert.strictEqual(scripLookupRes.status, 200);
+    const scripLookupData = JSON.parse(scripLookupRes.body).data;
+    assert.strictEqual(scripLookupData.lotSize, 65);
+    assert(scripLookupData.freezeQty >= 1755);
+
+    const calcQtyRes = await httpRequest(testPort, '/api/orders/calculate-quantity', 'POST', {
+      tradingSymbol: 'NIFTY27OCT26C25000',
+      exchangeSegment: 'NFO',
+      orderType: 'L',
+      transactionType: 'B',
+      price: 150
+    });
+    assert.strictEqual(calcQtyRes.status, 200);
+    const calcQtyData = JSON.parse(calcQtyRes.body).data;
+    assert.strictEqual(calcQtyData.lotSize, 65);
+    assert(calcQtyData.freezeQty >= 1755);
+    assert.strictEqual(calcQtyData.orderType, 'L');
+    assert.strictEqual(calcQtyData.orderPrice, 150);
+
+    const calcSlHttpRes = await httpRequest(testPort, '/api/orders/calculate-quantity', 'POST', {
+      tradingSymbol: 'NIFTY27OCT26C25000',
+      exchangeSegment: 'NFO',
+      orderType: 'SL',
+      transactionType: 'B',
+      triggerPrice: 140
+    });
+    assert.strictEqual(calcSlHttpRes.status, 200);
+    const calcSlHttpData = JSON.parse(calcSlHttpRes.body).data;
+    assert.strictEqual(calcSlHttpData.orderType, 'SL');
+    assert.strictEqual(calcSlHttpData.triggerPrice, 140);
+    assert.strictEqual(calcSlHttpData.orderPrice, 140.5);
+
+    const calcMktHttpRes = await httpRequest(testPort, '/api/orders/calculate-quantity', 'POST', {
+      tradingSymbol: 'NIFTY27OCT26C25000',
+      exchangeSegment: 'NFO',
+      orderType: 'MKT',
+      transactionType: 'B',
+      ltp: 120
+    });
+    assert.strictEqual(calcMktHttpRes.status, 200);
+    const calcMktHttpData = JSON.parse(calcMktHttpRes.body).data;
+    assert.strictEqual(calcMktHttpData.orderType, 'MKT');
+    assert.strictEqual(calcMktHttpData.price, 120);
+    console.log('   ✅ /api/scrip-master/* and /api/orders/calculate-quantity endpoints verified.');
 
     const sse = await readSSEEvents(testPort, 2200);
     assert.strictEqual(sse.status, 200);
