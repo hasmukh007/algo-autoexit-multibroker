@@ -91,12 +91,20 @@ niftyFeedManager.on('tick', snapshot => {
   }
 });
 
-multiBrokerManager.on('ws_tick', ({ broker, tick }) => {
+multiBrokerManager.on('ws_tick', ({ broker, accountId, tick }) => {
   if (!tick || !(tick.ltp > 0)) return;
+  let sahiNiftyId = 10854;
+  if (broker === 'sahi' && accountId) {
+    const inst = multiBrokerManager.brokerInstances.get(accountId);
+    if (inst && inst._cache && inst._cache.scripMaster && inst._cache.scripMaster.niftyIndexId) {
+      sahiNiftyId = inst._cache.scripMaster.niftyIndexId;
+    }
+  }
   const isNiftySpotTick =
     (broker === 'angelone' && String(tick.token) === '99926000') ||
     (broker === 'kotakneo' && (String(tick.token) === 'Nifty 50' || String(tick.key) === 'nse_cm|Nifty 50')) ||
-    (broker === 'dhan' && String(tick.securityId) === '13' && Number(tick.exchangeSegmentId) === 0);
+    (broker === 'dhan' && String(tick.securityId) === '13' && Number(tick.exchangeSegmentId) === 0) ||
+    (broker === 'sahi' && Number(tick.instrumentId) === Number(sahiNiftyId));
 
   if (isNiftySpotTick) {
     niftyCandleManager.onSpotTick(tick.ltp, tick.receivedAt || Date.now(), Number(tick.volume || 0));
@@ -318,7 +326,7 @@ const server = http.createServer(async (req, res) => {
   if (pathname.startsWith('/api/')) {
     try {
       /* ============================================================
-         1. ACCOUNTS MANAGEMENT (Angel One, Dhan, Kotak Neo)
+         1. ACCOUNTS MANAGEMENT (Angel One, Dhan, Kotak Neo, Sahi)
          ============================================================ */
       if (pathname === '/api/accounts' && method === 'GET') {
         return sendJson(res, 200, {
@@ -330,8 +338,8 @@ const server = http.createServer(async (req, res) => {
 
       if (pathname === '/api/accounts' && method === 'POST') {
         const body = await parseBody(req);
-        if (!body.broker || !['kotakneo', 'angelone', 'dhan'].includes(body.broker)) {
-          return sendJson(res, 400, { success: false, message: 'Valid broker (kotakneo, angelone, dhan) is required' });
+        if (!body.broker || !['kotakneo', 'angelone', 'dhan', 'sahi'].includes(body.broker)) {
+          return sendJson(res, 400, { success: false, message: 'Valid broker (kotakneo, angelone, dhan, sahi) is required' });
         }
         const created = multiBrokerManager.addAccount(body);
         autoExitEngine.log('INFO', `Added broker account: ${created.name} (${created.broker})`);
@@ -373,17 +381,19 @@ const server = http.createServer(async (req, res) => {
 
       if (pathname === '/api/accounts/test-credentials' && method === 'POST') {
         const body = await parseBody(req);
-        if (!body.broker || !['kotakneo', 'angelone', 'dhan'].includes(body.broker)) {
-          return sendJson(res, 400, { success: false, message: 'Valid broker (kotakneo, angelone, dhan) is required' });
+        if (!body.broker || !['kotakneo', 'angelone', 'dhan', 'sahi'].includes(body.broker)) {
+          return sendJson(res, 400, { success: false, message: 'Valid broker (kotakneo, angelone, dhan, sahi) is required' });
         }
         const KotakNeoBroker = require('./lib/brokers/kotakNeoBroker');
         const AngelOneBroker = require('./lib/brokers/angelOneBroker');
         const DhanBroker = require('./lib/brokers/dhanBroker');
+        const SahiBroker = require('./lib/brokers/sahiBroker');
         const testCfg = { ...body, isMock: currentConfig.mode === 'mock' };
         let tempInst;
         if (body.broker === 'kotakneo') tempInst = new KotakNeoBroker(testCfg);
         else if (body.broker === 'angelone') tempInst = new AngelOneBroker(testCfg);
-        else tempInst = new DhanBroker(testCfg);
+        else if (body.broker === 'dhan') tempInst = new DhanBroker(testCfg);
+        else tempInst = new SahiBroker(testCfg);
 
         try {
           const resLogin = await tempInst.login(body.totp || null);

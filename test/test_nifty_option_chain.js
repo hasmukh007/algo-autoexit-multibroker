@@ -10,10 +10,13 @@ const AutoLoginScheduler = require('../lib/autoLoginScheduler');
 const AngelOneBroker = require('../lib/brokers/angelOneBroker');
 const KotakNeoBroker = require('../lib/brokers/kotakNeoBroker');
 const DhanBroker = require('../lib/brokers/dhanBroker');
+const SahiBroker = require('../lib/brokers/sahiBroker');
 const { parseSmartStreamPacket } = require('../lib/angelOneWsClient');
 const { parseKotakMarketMessage } = require('../lib/kotakNeoWsClient');
 const { parseDhanFeedPacket } = require('../lib/dhanWsClient');
+const { encodeClientSubscribe, decodeServerMessage } = require('../lib/sahiWsClient');
 const KotakNeoClient = require('../lib/kotakNeoClient');
+const MultiBrokerManager = require('../lib/multiBrokerManager');
 const configManager = require('../lib/configManager');
 
 function makeISTDate(year, month, day, hourIST, minIST) {
@@ -475,6 +478,203 @@ async function run() {
     global.fetch = origFetchD;
   }
 
+  // 2d-sahi. SahiBroker: auth mint, paise->INR conversion, Protobuf WS market stream, and 3m historical candles
+  const encodeTestVarint = val => {
+    let v = BigInt(val);
+    const out = [];
+    while (v >= 0x80n) {
+      out.push(Number((v & 0x7fn) | 0x80n));
+      v >>= 7n;
+    }
+    out.push(Number(v));
+    return out;
+  };
+  const pbVarint = (field, val) => [...encodeTestVarint((field << 3) | 0), ...encodeTestVarint(val)];
+  const pbBytes = (field, bytes) => [...encodeTestVarint((field << 3) | 2), ...encodeTestVarint(bytes.length), ...bytes];
+
+  // Encode ServerMessage { quote_tick (field 3): instrument_id=10854, segment=NSE(1), type=INDEX(1), ltp=2481250 paise (24812.50), volume=0 }
+  const quoteTickBody = [
+    ...pbVarint(1, 10854),
+    ...pbVarint(2, 1),
+    ...pbVarint(3, 1),
+    ...pbVarint(4, 2481250),
+    ...pbVarint(6, 0)
+  ];
+  const sahiSpotProto = Uint8Array.from(pbBytes(3, quoteTickBody));
+  const decodedSpot = decodeServerMessage(sahiSpotProto);
+  assert.strictEqual(decodedSpot.type, 'quote_tick');
+  assert.strictEqual(decodedSpot.instrumentId, 10854);
+  assert.strictEqual(decodedSpot.ltp, 24812.5);
+
+  const subFrame = encodeClientSubscribe(2, [10854, 12027]);
+  assert(subFrame instanceof Uint8Array && subFrame.length > 4, 'Sahi protobuf subscribe frame must encode cleanly');
+
+  const depthBidBody = [...pbVarint(1, 184550), ...pbVarint(2, 50), ...pbVarint(3, 2)];
+  const depthAskBody = [...pbVarint(1, 184600), ...pbVarint(2, 75), ...pbVarint(3, 3)];
+  const depthTickBody = [
+    ...pbVarint(1, 12027),
+    ...pbVarint(2, 1),
+    ...pbVarint(3, 2),
+    ...pbVarint(4, 184575),
+    ...pbVarint(10, 125000),
+    ...pbBytes(11, depthBidBody),
+    ...pbBytes(12, depthAskBody)
+  ];
+  const sahiDepthProto = Uint8Array.from(pbBytes(4, depthTickBody));
+
+  const origFetchSahi = global.fetch;
+  let sahiBroker;
+  try {
+    let sahiPosCalls = 0;
+    let sahiHoldCalls = 0;
+    let sahiAuthBody = null;
+    let sahiPlacedOrderBody = null;
+
+    global.fetch = async (url, opts = {}) => {
+      if (url.includes('/api/v1/apikeys/token')) {
+        sahiAuthBody = JSON.parse(opts.body);
+        const body = { access_token: 'sahi-jwt-123', token_type: 'Bearer', expires_in: 36000, expires_at: '2099-01-01T06:00:00+05:30', scope: 'orders.write orders.read positions.read holdings.read funds.read profile.read marketdata.read' };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (url.includes('/v1/profile')) {
+        const body = { user_id: 'SAHI999', name: 'Test Sahi Trader' };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (url.includes('/v1/funds')) {
+        const body = {
+          available: { stocks_delivery: 10000000, intraday_and_fno_selling: 11500050 },
+          balance: { opening_balance: 10000000, payin: 500000, payout: 0, collateral: 2000000, delivery_sell_credit: 0 },
+          utilised: { span: 800000, exposure: 200000, delivery_margin: 0, intraday_margin: 0, delivery_buy: 0, charges: 0, mtm_loss: 0 }
+        };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (url.includes('/v1/positions')) {
+        sahiPosCalls++;
+        const body = {
+          positions: [{
+            exchange_segment: 'NSE',
+            symbol: 'RELIANCE',
+            instrument_id: 12027,
+            product: 'I',
+            open_buy_avg_price: 184000,
+            total_buy_qty: 10,
+            total_sell_qty: 0,
+            net_qty: 10,
+            net_avg_price: 184000,
+            realised_pnl: 0
+          }]
+        };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (url.includes('/v1/holdings')) {
+        sahiHoldCalls++;
+        const body = {
+          holdings: [{
+            isin: 'INE002A01018',
+            instrument_ids: [12027],
+            t1_qty: 0,
+            dp_qty: 5,
+            holding_qty: 5,
+            holding_avg_price: 180000,
+            authorised_qty: 5,
+            net_qty: 5
+          }]
+        };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (url.includes('instruments.csv')) {
+        const csv = [
+          'id,isin,symbol,company_name,series,underlying_symbol,exchange,segment,token,instrument_type,option_type,expiry_date,strike_price,lot_size,tick_size,freeze_quantity,price_precision,price_multiplier',
+          '10854,,,Nifty 50,,,NSE,NSE,26000,IDX,,,0.00,0,0.00,0,0,0',
+          '12027,INE002A01018,RELIANCE,Reliance Industries,EQ,,NSE,NSE,2885,STK,,,0.00,1,0.10,0,2,1'
+        ].join('\n');
+        return { ok: true, status: 200, text: async () => csv };
+      }
+      if (url.includes('/v1/marketdata/candles')) {
+        const ts1 = Date.now() - 360000;
+        const body = {
+          instrument_id: 10854,
+          size: '3m',
+          candles: [[ts1, 2480000, 2482000, 2479000, 2481250, 0]],
+          has_more: false
+        };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (url.includes('/v1/orders') && opts.method === 'POST') {
+        sahiPlacedOrderBody = JSON.parse(opts.body);
+        const body = { order_ids: ['2611260000001234'] };
+        return { ok: true, status: 201, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) };
+    };
+
+    sahiBroker = new SahiBroker({
+      id: 'test_sahi_ws',
+      keyId: 'pk_test_123',
+      secret: 'sahi_sk_test_456',
+      isMock: false,
+      autoConnect: false,
+      WebSocketImpl: FakeWebSocket
+    });
+
+    const loginRes = await sahiBroker.login();
+    assert.strictEqual(loginRes.success, true);
+    assert.strictEqual(sahiAuthBody.totp, undefined, 'Regular Sahi key must omit totp field');
+    await new Promise(r => setTimeout(r, 30));
+
+    const sahiFunds = await sahiBroker.getFunds();
+    assert.strictEqual(sahiFunds.availableCash, 115000.5);
+    assert.strictEqual(sahiFunds.utilizedMargin, 10000);
+    assert.strictEqual(sahiFunds.totalBalance, 125000);
+
+    assert.strictEqual(sahiPosCalls, 1, 'Sahi positions fetched once on login');
+    assert.strictEqual(sahiHoldCalls, 1, 'Sahi holdings fetched once on login');
+    await sahiBroker.getPositions();
+    await sahiBroker.getHoldings();
+    assert.strictEqual(sahiPosCalls, 1, 'Sahi regular polling must use cached positions');
+    assert.strictEqual(sahiHoldCalls, 1, 'Sahi regular polling must use cached holdings');
+
+    // Feed live Protobuf WS frames for NIFTY (10854) and RELIANCE (12027)
+    sahiBroker.wsClient.marketWs._emit('message', { data: sahiSpotProto });
+    sahiBroker.wsClient.marketWs._emit('message', { data: sahiDepthProto });
+
+    const sSpot = await sahiBroker.getIndexQuote('NIFTY');
+    assert.strictEqual(sSpot.ltp, 24812.5);
+
+    const sPosWs = await sahiBroker.getPositions();
+    assert.strictEqual(sPosWs[0].ltp, 1845.75);
+    assert.strictEqual(sPosWs[0].unrealizedPnl, 57.5); // (1845.75 - 1840) * 10
+
+    const sCandles = await sahiBroker.getHistoricalCandles({ days: 3, interval: '3m' });
+    assert.strictEqual(sCandles.length, 1);
+    assert.strictEqual(sCandles[0].close, 24812.5);
+
+    const sOrdRes = await sahiBroker.placeOrder({
+      tradingSymbol: 'RELIANCE',
+      exchangeSegment: 'nse_cm',
+      transactionType: 'B',
+      orderType: 'LMT',
+      product: 'MIS',
+      quantity: 2,
+      price: 1845.75
+    });
+    assert.strictEqual(sOrdRes.orderId, '2611260000001234');
+    assert.strictEqual(sahiPlacedOrderBody.exchange_segment, 'NSE');
+    assert.strictEqual(sahiPlacedOrderBody.product, 'I');
+    assert.strictEqual(sahiPlacedOrderBody.price, 184575, 'Sahi order price must convert INR to integer paise');
+
+    const mgrFeedCheck = new MultiBrokerManager({ loadConfig: () => ({ mode: 'mock' }) });
+    assert.strictEqual(mgrFeedCheck.setDataFeedSource('sahi').dataFeedSource, 'sahi');
+    for (const inst of mgrFeedCheck.brokerInstances.values()) {
+      if (typeof inst.disconnect === 'function') inst.disconnect();
+    }
+
+    console.log('   ✅ SahiBroker authenticates, converts paise<->INR, decodes Protobuf WS ticks, and fetches 3m history.');
+  } finally {
+    if (sahiBroker) sahiBroker.disconnect();
+    global.fetch = origFetchSahi;
+  }
+
   // 2e. NiftyCandleManager: 3-minute SQLite persistence, WS candle aggregation, and 3-day REST backfill
   const testDbPath = path.join(__dirname, '..', 'data', 'test_candles_tmp.db');
   for (const suffix of ['', '-wal', '-shm']) {
@@ -895,6 +1095,15 @@ async function run() {
     assert.strictEqual(testCredsRes.status, 200);
     assert.strictEqual(typeof testCredsJson.message, 'string');
     assert(!testCredsJson.message.includes('[object Object]'));
+
+    const testSahiCredsRes = await httpRequest(testPort, '/api/accounts/test-credentials', 'POST', {
+      broker: 'sahi',
+      keyId: 'pk_test',
+      secret: 'sahi_sk_test'
+    });
+    const testSahiCredsJson = JSON.parse(testSahiCredsRes.body);
+    assert.strictEqual(testSahiCredsRes.status, 200);
+    assert.strictEqual(typeof testSahiCredsJson.message, 'string');
 
     const sse = await readSSEEvents(testPort, 2200);
     assert.strictEqual(sse.status, 200);

@@ -32,6 +32,8 @@
   --angel-bg: rgba(6, 182, 212, 0.15);
   --dhan-color: #a855f7;
   --dhan-bg: rgba(168, 85, 247, 0.15);
+  --sahi-color: #10b981;
+  --sahi-bg: rgba(16, 185, 129, 0.15);
 
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
@@ -370,6 +372,7 @@ input:checked + .slider:before { transform: translateX(16px); }
 .badge-kotakneo { background: var(--kotak-bg); color: var(--kotak-color); font-weight: 700; }
 .badge-angelone { background: var(--angel-bg); color: var(--angel-color); font-weight: 700; }
 .badge-dhan { background: var(--dhan-bg); color: var(--dhan-color); font-weight: 700; }
+.badge-sahi { background: var(--sahi-bg); color: var(--sahi-color); font-weight: 700; }
 
 /* MAIN CONTENT */
 .main-content { flex: 1; padding: 20px; }

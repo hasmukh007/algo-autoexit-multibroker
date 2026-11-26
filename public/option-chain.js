@@ -180,6 +180,7 @@ function updateTopNiftyBar(snapshot) {
 function formatFeedLabel(source) {
   if (source === 'angelone') return 'Angel One';
   if (source === 'dhan') return 'Dhan';
+  if (source === 'sahi') return 'Sahi';
   return 'Kotak Neo';
 }
 

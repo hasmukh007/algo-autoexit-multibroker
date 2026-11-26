@@ -99,6 +99,7 @@ const DOM = {
   feedKotakRadio: document.getElementById('feedKotakRadio'),
   feedAngelRadio: document.getElementById('feedAngelRadio'),
   feedDhanRadio: document.getElementById('feedDhanRadio'),
+  feedSahiRadio: document.getElementById('feedSahiRadio'),
   logsContainer: document.getElementById('logsContainer'),
   clearLogsBtn: document.getElementById('clearLogsBtn'),
 
@@ -137,6 +138,11 @@ const DOM = {
   dhanFields: document.getElementById('dhanFields'),
   dhanClientId: document.getElementById('dhanClientId'),
   dhanAccessToken: document.getElementById('dhanAccessToken'),
+  sahiFields: document.getElementById('sahiFields'),
+  sahiKeyId: document.getElementById('sahiKeyId'),
+  sahiSecret: document.getElementById('sahiSecret'),
+  sahiTotpSecret: document.getElementById('sahiTotpSecret'),
+  sahiAccessToken: document.getElementById('sahiAccessToken'),
   accOneTimeTotp: document.getElementById('accOneTimeTotp'),
   testAccConnBtn: document.getElementById('testAccConnBtn'),
 
@@ -307,7 +313,15 @@ function initEventSource() {
 function formatFeedSourceLabel(source) {
   if (source === 'angelone') return 'Angel One';
   if (source === 'dhan') return 'Dhan';
+  if (source === 'sahi') return 'Sahi';
   return 'Kotak Neo';
+}
+
+function getBrokerBadgeClass(broker) {
+  if (broker === 'angelone') return 'badge-angelone';
+  if (broker === 'dhan') return 'badge-dhan';
+  if (broker === 'sahi') return 'badge-sahi';
+  return 'badge-kotakneo';
 }
 
 function handleMarketTick(payload) {
@@ -501,9 +515,7 @@ function renderPositionsTable() {
     const isGrossProfit = (pos.grossPnl || 0) >= 0;
     const isNetProfit = (pos.netPnl || 0) >= 0;
 
-    let brokerBadgeClass = 'badge-kotakneo';
-    if (pos.broker === 'angelone') brokerBadgeClass = 'badge-angelone';
-    if (pos.broker === 'dhan') brokerBadgeClass = 'badge-dhan';
+    const brokerBadgeClass = getBrokerBadgeClass(pos.broker);
 
     let ruleBadge = `<span class="badge">No Rule</span>`;
     if (rule && rule.enabled) {
@@ -606,9 +618,7 @@ function renderOrdersTable() {
 
   let html = '';
   state.orders.forEach(ord => {
-    let bClass = 'badge-kotakneo';
-    if (ord.broker === 'angelone') bClass = 'badge-angelone';
-    if (ord.broker === 'dhan') bClass = 'badge-dhan';
+    const bClass = getBrokerBadgeClass(ord.broker);
 
     html += `
       <tr>
@@ -637,9 +647,7 @@ function renderAccountsTable() {
 
   let html = '';
   state.accounts.forEach(acc => {
-    let bClass = 'badge-kotakneo';
-    if (acc.broker === 'angelone') bClass = 'badge-angelone';
-    if (acc.broker === 'dhan') bClass = 'badge-dhan';
+    const bClass = getBrokerBadgeClass(acc.broker);
 
     html += `
       <tr>
@@ -946,6 +954,7 @@ function switchBrokerFields(broker) {
   DOM.kotakFields.style.display = broker === 'kotakneo' ? 'block' : 'none';
   DOM.angelFields.style.display = broker === 'angelone' ? 'block' : 'none';
   DOM.dhanFields.style.display = broker === 'dhan' ? 'block' : 'none';
+  if (DOM.sahiFields) DOM.sahiFields.style.display = broker === 'sahi' ? 'block' : 'none';
 }
 
 function buildAccountPayloadFromModal() {
@@ -970,6 +979,11 @@ function buildAccountPayloadFromModal() {
   } else if (broker === 'dhan') {
     payload.clientId = DOM.dhanClientId.value.trim();
     payload.accessToken = DOM.dhanAccessToken.value.trim();
+  } else if (broker === 'sahi') {
+    payload.keyId = DOM.sahiKeyId ? DOM.sahiKeyId.value.trim() : '';
+    payload.secret = DOM.sahiSecret ? DOM.sahiSecret.value.trim() : '';
+    payload.totpSecret = DOM.sahiTotpSecret ? DOM.sahiTotpSecret.value.trim() : '';
+    payload.accessToken = DOM.sahiAccessToken ? DOM.sahiAccessToken.value.trim() : '';
   }
 
   if (DOM.accOneTimeTotp && DOM.accOneTimeTotp.value.trim()) {
@@ -981,7 +995,7 @@ function buildAccountPayloadFromModal() {
 if (DOM.testAccConnBtn) {
   DOM.testAccConnBtn.addEventListener('click', async () => {
     const payload = buildAccountPayloadFromModal();
-    if (!payload.totp && payload.broker !== 'dhan' && !payload.totpSecret) {
+    if (!payload.totp && payload.broker !== 'dhan' && payload.broker !== 'sahi' && !payload.totpSecret) {
       const entered = prompt('Enter 6-digit TOTP to test connection:');
       if (entered) payload.totp = entered.trim();
     }
@@ -1036,7 +1050,7 @@ DOM.accountForm.addEventListener('submit', async e => {
 
 // Market Data Feed Switching
 DOM.switchFeedBtn.addEventListener('click', async () => {
-  const order = ['kotakneo', 'angelone', 'dhan'];
+  const order = ['kotakneo', 'angelone', 'dhan', 'sahi'];
   const idx = order.indexOf(state.dataFeedSource);
   const target = order[(idx + 1) % order.length];
   await setFeedSource(target);
@@ -1045,6 +1059,7 @@ DOM.switchFeedBtn.addEventListener('click', async () => {
 DOM.feedKotakRadio.addEventListener('change', () => setFeedSource('kotakneo'));
 DOM.feedAngelRadio.addEventListener('change', () => setFeedSource('angelone'));
 if (DOM.feedDhanRadio) DOM.feedDhanRadio.addEventListener('change', () => setFeedSource('dhan'));
+if (DOM.feedSahiRadio) DOM.feedSahiRadio.addEventListener('change', () => setFeedSource('sahi'));
 
 async function setFeedSource(source) {
   try {
@@ -1061,6 +1076,7 @@ async function setFeedSource(source) {
       if (DOM.feedKotakRadio) DOM.feedKotakRadio.checked = source === 'kotakneo';
       if (DOM.feedAngelRadio) DOM.feedAngelRadio.checked = source === 'angelone';
       if (DOM.feedDhanRadio) DOM.feedDhanRadio.checked = source === 'dhan';
+      if (DOM.feedSahiRadio) DOM.feedSahiRadio.checked = source === 'sahi';
       showToast(`Market data subscription switched to ${DOM.activeFeedText.textContent}`, 'info');
     }
   } catch (e) {}

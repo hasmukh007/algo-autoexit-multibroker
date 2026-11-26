@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Multi-Broker Algo Auto-Exit Terminal | Angel One • Dhan • Kotak Neo</title>
+  <title>Multi-Broker Algo Auto-Exit Terminal | Angel One • Dhan • Kotak Neo • Sahi</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -65,7 +65,7 @@
           </div>
           <div class="brand-text">
             <span class="brand-title">MULTI-BROKER ALGO AUTO-EXIT</span>
-            <span class="brand-sub">ANGEL ONE • DHAN • KOTAK NEO</span>
+            <span class="brand-sub">ANGEL ONE • DHAN • KOTAK NEO • SAHI</span>
           </div>
         </div>
 
@@ -545,6 +545,10 @@
               <input type="radio" name="feedChoice" value="dhan" id="feedDhanRadio">
               <span>DhanHQ Feed</span>
             </label>
+            <label class="custom-radio">
+              <input type="radio" name="feedChoice" value="sahi" id="feedSahiRadio">
+              <span>Sahi Direct Feed</span>
+            </label>
           </div>
         </div>
       </section>
@@ -585,6 +589,7 @@
                 <option value="kotakneo">Kotak Neo (Kotak Securities)</option>
                 <option value="angelone">Angel One (SmartAPI)</option>
                 <option value="dhan">Dhan (DhanHQ)</option>
+                <option value="sahi">Sahi Direct API (Sahi)</option>
               </select>
             </div>
 
@@ -661,9 +666,33 @@
             </div>
           </div>
 
+          <div id="sahiFields" class="broker-fields" style="display: none;">
+            <h4>Sahi Direct API Credentials</h4>
+            <div class="form-row two-col">
+              <div class="form-group">
+                <label>API Key ID</label>
+                <input type="text" id="sahiKeyId" placeholder="pk_...">
+              </div>
+              <div class="form-group">
+                <label>API Secret</label>
+                <input type="password" id="sahiSecret" placeholder="sahi_sk_...">
+              </div>
+            </div>
+            <div class="form-row two-col">
+              <div class="form-group">
+                <label>TOTP Secret (Base32, TOTP keys only)</label>
+                <input type="text" id="sahiTotpSecret" placeholder="Optional for auto daily approval">
+              </div>
+              <div class="form-group">
+                <label>Pre-Minted Access Token (Optional)</label>
+                <input type="text" id="sahiAccessToken" placeholder="Optional Bearer token if already minted">
+              </div>
+            </div>
+          </div>
+
           <div class="form-group" style="margin-bottom: 12px;">
             <label for="accOneTimeTotp">6-Digit TOTP (Optional — auto-logs in &amp; subscribes live feed immediately)</label>
-            <input type="text" id="accOneTimeTotp" maxlength="6" placeholder="Leave blank if using TOTP Secret, Dhan token, or Mock">
+            <input type="text" id="accOneTimeTotp" maxlength="6" placeholder="Leave blank if using TOTP Secret, Regular Sahi/Dhan token, or Mock">
           </div>
 
           <div class="modal-actions">
