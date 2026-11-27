@@ -1582,6 +1582,18 @@ async function run() {
     assert(homeRes.body.includes('orderStrikeSelect') && homeRes.body.includes('orderResetAtmBtn'), 'Dashboard must expose Strike Price selector for Call/Put');
     assert(homeRes.body.includes('quickCapitalDeployPct') && homeRes.body.includes('quickMaxOrders') && homeRes.body.includes('quickRoutingMode') && homeRes.body.includes('orderRoutingMode'), 'Dashboard must expose Capital Deploy %, Max Orders/Day, and Order Routing controls on top');
     assert(homeRes.body.includes('fetchPortfolioBtn') && homeRes.body.includes('portfolioFetchStatusBadge') && homeRes.body.includes('holdingsTableBody') && homeRes.body.includes('refreshHoldingsBtn'), 'Dashboard must expose Fetch Pos/Funds/Hold/Orders button and Holdings table');
+    assert(homeRes.body.includes('openChargeSettingsBtn') && homeRes.body.includes('chargeSettingsModal') && homeRes.body.includes('chgSttPct') && homeRes.body.includes('chgGstPct'), 'Dashboard must expose Charges button and popup settings modal');
+    assert(homeRes.body.includes('quickRiskAccountSelect') && homeRes.body.includes('addPaperAccountBtn') && homeRes.body.includes('paperFields') && homeRes.body.includes('accTargetNetPct'), 'Dashboard must expose per-account SL/Target selector and Paper Trading account controls');
+    assert(!homeRes.body.includes('mcx_fo') && !homeRes.body.includes('value="CNC"') && !homeRes.body.includes('customBrokerageFields'), 'Dashboard must be Options-only without Futures/MCX/Delivery options');
+    assert(homeRes.body.includes('positionFilterGroup') && homeRes.body.includes('data-pos-filter="per_trade"') && homeRes.body.includes('perTradeTableContainer'), 'Dashboard must expose Net Position & Per Trade filters and table');
+    assert(homeRes.body.includes('orderStatusFilterGroup') && homeRes.body.includes('data-order-filter="completed"') && homeRes.body.includes('data-order-filter="rejected"') && homeRes.body.includes('data-order-filter="cancelled"'), 'Dashboard must expose Order filters for All/Completed/Open/Rejected/Cancelled');
+    assert(homeRes.body.includes('order-confirm.js'), 'Dashboard must load order-confirm.js');
+    const confirmJsRes = await httpRequest(testPort, '/order-confirm.js');
+    assert.strictEqual(confirmJsRes.status, 200);
+    assert(confirmJsRes.body.includes('playOrderBellSound') && confirmJsRes.body.includes('confirmOrderBeforeSend') && confirmJsRes.body.includes('attachOrderConfirmationStream'), 'order-confirm.js must expose bell sound, confirmation modal, and SSE listener');
+    const pendingRes = await httpRequest(testPort, '/api/pending-orders');
+    assert.strictEqual(pendingRes.status, 200);
+    assert.strictEqual(pendingRes.body ? JSON.parse(pendingRes.body).success : false, true);
     const appJsRes = await httpRequest(testPort, '/app.js');
     assert.strictEqual(appJsRes.status, 200);
     assert(appJsRes.body.includes('brokerSelectSignature') && appJsRes.body.includes('algo_selected_order_broker'), 'updateBrokerSelect must preserve user-selected broker across SSE ticks');
@@ -1589,6 +1601,8 @@ async function run() {
     assert(appJsRes.body.includes('populateStrikeSelect') && appJsRes.body.includes('updateOrderCurrentPriceDisplay'), 'app.js must populate strike selector and update top current price display');
     assert(appJsRes.body.includes('if (userChanged || ot === \'MKT\')'), 'Live ticks must NOT overwrite Limit or SL Limit/Trigger price textboxes');
     assert(appJsRes.body.includes('riskSettingsInitialized') && appJsRes.body.includes('algo_order_routing_mode'), 'app.js must preserve Execution Target dropdown across SSE ticks');
+    assert(appJsRes.body.includes('chargeSettingsForm') && appJsRes.body.includes('updateQuickRiskAccountSelect') && appJsRes.body.includes('reset-paper-btn'), 'app.js must wire Charge Settings modal, per-account SL/Target select, and Paper reset');
+    assert(appJsRes.body.includes('renderPerTradeTable') && appJsRes.body.includes('getOrderFilterCategory'), 'app.js must wire Per Trade rendering and Order status filters');
     const ocJsRes = await httpRequest(testPort, '/option-chain.js');
     assert.strictEqual(ocJsRes.status, 200);
     assert(ocJsRes.body.includes('algo_selected_order_broker') && ocJsRes.body.includes('sizingSeq'), 'option-chain.js must preserve broker selection and guard async sizing');
@@ -1716,7 +1730,59 @@ async function run() {
     const statusRes = await httpRequest(testPort, '/api/status');
     assert.strictEqual(statusRes.status, 200);
     const statusData = JSON.parse(statusRes.body);
-    assert(statusData.riskSettings && statusData.dailyOrders && statusData.portfolioSchedule, 'GET /api/status must expose riskSettings, dailyOrders, and portfolioSchedule');
+    assert(statusData.riskSettings && statusData.dailyOrders && statusData.portfolioSchedule && statusData.chargeSettings, 'GET /api/status must expose riskSettings, dailyOrders, portfolioSchedule, and chargeSettings');
+
+    // Verify GET & POST /api/charge-settings (then restore original settings)
+    const getChgRes = await httpRequest(testPort, '/api/charge-settings');
+    assert.strictEqual(getChgRes.status, 200);
+    const origCharges = JSON.parse(getChgRes.body).chargeSettings;
+    assert.strictEqual(origCharges.sttPct, 0.15);
+    assert.strictEqual(origCharges.exchangeTxnPct, 0.03553);
+    assert.strictEqual(origCharges.sebiPerCrore, 10);
+    assert.strictEqual(origCharges.ipftPerCrore, 0.01);
+    assert.strictEqual(origCharges.stampDutyBuyPct, 0.003);
+    assert.strictEqual(origCharges.gstPct, 18);
+
+    const updChgRes = await httpRequest(testPort, '/api/charge-settings', 'POST', { sttPct: 0.16 });
+    assert.strictEqual(updChgRes.status, 200);
+    assert.strictEqual(JSON.parse(updChgRes.body).chargeSettings.sttPct, 0.16);
+    await httpRequest(testPort, '/api/charge-settings', 'POST', origCharges);
+
+    // Verify Paper Account test-credentials + create + per-account risk-settings + paper-reset + cleanup delete
+    const paperTestRes = await httpRequest(testPort, '/api/accounts/test-credentials', 'POST', { broker: 'paper', name: 'Paper Check', initialBalance: 300000 });
+    assert.strictEqual(paperTestRes.status, 200);
+    assert.strictEqual(JSON.parse(paperTestRes.body).success, true);
+
+    const createPaperRes = await httpRequest(testPort, '/api/accounts', 'POST', {
+      broker: 'paper',
+      name: 'HTTP Test Paper Account',
+      initialBalance: 400000,
+      brokerageType: 'zero',
+      brokeragePerOrder: 0,
+      targetNetProfitPct: 2.5,
+      stopLossNetPct: 1.25
+    });
+    assert.strictEqual(createPaperRes.status, 200);
+    const createdPaper = JSON.parse(createPaperRes.body).data;
+    assert(createdPaper && createdPaper.id);
+
+    const accRiskRes = await httpRequest(testPort, `/api/accounts/${createdPaper.id}/risk-settings`, 'POST', {
+      targetNetProfitPct: 3.2,
+      stopLossNetPct: 0.8,
+      nearThresholdBufferPct: 97
+    });
+    assert.strictEqual(accRiskRes.status, 200);
+    const accRiskJson = JSON.parse(accRiskRes.body);
+    assert.strictEqual(accRiskJson.accountRisk.targetNetProfitPct, 3.2);
+    assert.strictEqual(accRiskJson.accountRisk.stopLossNetPct, 0.8);
+
+    const paperResetRes = await httpRequest(testPort, `/api/accounts/${createdPaper.id}/paper-reset`, 'POST', { initialBalance: 250000 });
+    assert.strictEqual(paperResetRes.status, 200);
+    assert.strictEqual(JSON.parse(paperResetRes.body).funds.availableCash, 250000);
+
+    const delPaperRes = await httpRequest(testPort, `/api/accounts/${createdPaper.id}`, 'DELETE');
+    assert.strictEqual(delPaperRes.status, 200);
+    console.log('   ✅ /api/charge-settings, per-account SL/Target API, and Paper Trading account HTTP lifecycle verified.');
 
     const manualFetchHttpRes = await httpRequest(testPort, '/api/portfolio/fetch', 'POST', {});
     assert.strictEqual(manualFetchHttpRes.status, 200);

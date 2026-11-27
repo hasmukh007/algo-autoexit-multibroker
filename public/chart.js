@@ -1179,6 +1179,9 @@ async function loadNiftySpotSnapshot() {
 
 function initEventSource() {
   const es = new EventSource('/api/stream');
+  if (typeof window.attachOrderConfirmationStream === 'function') {
+    window.attachOrderConfirmationStream(es);
+  }
 
   es.addEventListener('connected', () => {
     C_DOM.connLabel.textContent = 'Live SSE Active';
@@ -1669,8 +1672,23 @@ if (C_DOM.chartOrderForm) {
       freezeQty: chartOrderState.freezeQty,
       price: ot === 'MKT' ? 0 : Number(C_DOM.chOrdPrice.value || 0),
       triggerPrice: ot === 'SL' && C_DOM.chOrdTriggerPrice ? Number(C_DOM.chOrdTriggerPrice.value || 0) : 0,
-      ltp: chartOrderState.ltp
+      ltp: chartOrderState.ltp,
+      userConfirmed: true
     };
+    const chSelOpt = C_DOM.chOrdBroker && C_DOM.chOrdBroker.options[C_DOM.chOrdBroker.selectedIndex];
+    const brokerLabel = payload.routingMode === 'all_funded'
+      ? 'All Funded Brokers'
+      : ((chSelOpt && chSelOpt.textContent) || payload.accountId);
+
+    if (typeof window.confirmOrderBeforeSend === 'function') {
+      const confirmed = await window.confirmOrderBeforeSend({
+        ...payload,
+        brokerLabel,
+        sourceLabel: 'Chart Order Confirmation'
+      });
+      if (!confirmed) return;
+    }
+
     C_DOM.submitChartOrderBtn.disabled = true;
     try {
       const res = await fetch('/api/orders', {

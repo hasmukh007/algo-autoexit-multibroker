@@ -34,6 +34,9 @@
     "totpSecret": "UXIEMHF3MSJ2RF2CBVZ4XHSKT5Y2O4Y5",
     "accessToken": "",
     "brokerageType": "flat",
-    "brokeragePerOrder": 10
+    "brokeragePerOrder": 10,
+    "targetNetProfitPct": 15,
+    "stopLossNetPct": 100,
+    "nearThresholdBufferPct": 98
   }
 ]

@@ -15,7 +15,10 @@ const state = {
   positions: [],
   holdings: [],
   orders: [],
+  positionFilter: 'all',
+  orderFilter: 'all',
   rules: {},
+  targetStates: {},
   totals: {
     totalGrossPnl: 0,
     totalCharges: 0,
@@ -28,7 +31,18 @@ const state = {
   selectedBrokerAccountId: '',
   brokerSelectSignature: '',
   riskSettingsInitialized: false,
-  selectedRoutingMode: ''
+  selectedRoutingMode: '',
+  selectedRiskAccountId: '',
+  riskAccountSelectSignature: '',
+  accountRiskInputsLoadedFor: '',
+  chargeSettings: {
+    sttPct: 0.15,
+    exchangeTxnPct: 0.03553,
+    sebiPerCrore: 10,
+    ipftPerCrore: 0.01,
+    stampDutyBuyPct: 0.003,
+    gstPct: 18
+  }
 };
 
 const DOM = {
@@ -54,6 +68,7 @@ const DOM = {
   marketPill: document.getElementById('marketPill'),
   fetchPortfolioBtn: document.getElementById('fetchPortfolioBtn'),
   portfolioFetchStatusBadge: document.getElementById('portfolioFetchStatusBadge'),
+  openChargeSettingsBtn: document.getElementById('openChargeSettingsBtn'),
   openAccountsBtn: document.getElementById('openAccountsBtn'),
   accountsBtnText: document.getElementById('accountsBtnText'),
   connStatus: document.getElementById('connStatus'),
@@ -68,6 +83,8 @@ const DOM = {
   overrideBalanceBtn: document.getElementById('overrideBalanceBtn'),
 
   // Quick Net Profit, Capital Deploy %, Max Orders & Routing Controls
+  quickRiskAccountSelect: document.getElementById('quickRiskAccountSelect'),
+  quickAccRiskHint: document.getElementById('quickAccRiskHint'),
   quickCapitalDeployPct: document.getElementById('quickCapitalDeployPct'),
   quickDeployInrHint: document.getElementById('quickDeployInrHint'),
   quickTargetPct: document.getElementById('quickTargetPct'),
@@ -104,14 +121,20 @@ const DOM = {
   ordersTabBadge: document.getElementById('ordersTabBadge'),
 
   // Tables
+  netPositionsTableContainer: document.getElementById('netPositionsTableContainer'),
   positionsTableBody: document.getElementById('positionsTableBody'),
+  perTradeTableContainer: document.getElementById('perTradeTableContainer'),
+  perTradeTableBody: document.getElementById('perTradeTableBody'),
+  positionFilterGroup: document.getElementById('positionFilterGroup'),
   refreshPositionsBtn: document.getElementById('refreshPositionsBtn'),
   holdingsTableBody: document.getElementById('holdingsTableBody'),
   refreshHoldingsBtn: document.getElementById('refreshHoldingsBtn'),
   holdingsCountBadge: document.getElementById('holdingsCountBadge'),
+  orderStatusFilterGroup: document.getElementById('orderStatusFilterGroup'),
   ordersTableBody: document.getElementById('ordersTableBody'),
   refreshOrdersBtn: document.getElementById('refreshOrdersBtn'),
   accountsTableBody: document.getElementById('accountsTableBody'),
+  addPaperAccountBtn: document.getElementById('addPaperAccountBtn'),
   addNewAccountBtn: document.getElementById('addNewAccountBtn'),
   currentFeedBadge: document.getElementById('currentFeedBadge'),
   feedKotakRadio: document.getElementById('feedKotakRadio'),
@@ -179,13 +202,13 @@ const DOM = {
   sahiSecret: document.getElementById('sahiSecret'),
   sahiTotpSecret: document.getElementById('sahiTotpSecret'),
   sahiAccessToken: document.getElementById('sahiAccessToken'),
+  paperFields: document.getElementById('paperFields'),
+  paperInitialBalance: document.getElementById('paperInitialBalance'),
   accBrokerageType: document.getElementById('accBrokerageType'),
   accBrokeragePerOrder: document.getElementById('accBrokeragePerOrder'),
-  customBrokerageFields: document.getElementById('customBrokerageFields'),
-  accOptionsBrokerage: document.getElementById('accOptionsBrokerage'),
-  accFuturesBrokerage: document.getElementById('accFuturesBrokerage'),
-  accIntradayBrokerage: document.getElementById('accIntradayBrokerage'),
-  accDeliveryBrokerage: document.getElementById('accDeliveryBrokerage'),
+  accTargetNetPct: document.getElementById('accTargetNetPct'),
+  accStopLossNetPct: document.getElementById('accStopLossNetPct'),
+  accNearBufferPct: document.getElementById('accNearBufferPct'),
   accOneTimeTotp: document.getElementById('accOneTimeTotp'),
   testAccConnBtn: document.getElementById('testAccConnBtn'),
 
@@ -206,6 +229,17 @@ const DOM = {
   chargesModal: document.getElementById('chargesModal'),
   closeChargesModal: document.getElementById('closeChargesModal'),
   chargesModalContent: document.getElementById('chargesModalContent'),
+
+  chargeSettingsModal: document.getElementById('chargeSettingsModal'),
+  closeChargeSettingsModal: document.getElementById('closeChargeSettingsModal'),
+  chargeSettingsForm: document.getElementById('chargeSettingsForm'),
+  chgSttPct: document.getElementById('chgSttPct'),
+  chgExchTxnPct: document.getElementById('chgExchTxnPct'),
+  chgSebiPerCrore: document.getElementById('chgSebiPerCrore'),
+  chgIpftPerCrore: document.getElementById('chgIpftPerCrore'),
+  chgStampDutyBuyPct: document.getElementById('chgStampDutyBuyPct'),
+  chgGstPct: document.getElementById('chgGstPct'),
+  resetChargeDefaultsBtn: document.getElementById('resetChargeDefaultsBtn'),
 
   toastContainer: document.getElementById('toastContainer')
 };
@@ -275,9 +309,72 @@ function updateClock() {
 setInterval(updateClock, 1000);
 updateClock();
 
-// Recalculate quick hint labels based on opening balance & daily order/risk settings
+// Populate top-bar Account (SL & Target) dropdown without losing selection
+function updateQuickRiskAccountSelect() {
+  if (!DOM.quickRiskAccountSelect) return;
+  let storedId = '';
+  try { storedId = localStorage.getItem('algo_selected_risk_account') || ''; } catch (e) {}
+  const prevSelected = DOM.quickRiskAccountSelect.value || state.selectedRiskAccountId || storedId;
+  const sig = state.accounts.map(acc => `${acc.id}:${acc.name}:${acc.broker}:${acc.targetNetProfitPct ?? ''}:${acc.stopLossNetPct ?? ''}`).join('|');
+
+  if (DOM.quickRiskAccountSelect.options.length > 0 && state.riskAccountSelectSignature === sig) {
+    if (prevSelected && state.accounts.some(acc => acc.id === prevSelected) && DOM.quickRiskAccountSelect.value !== prevSelected) {
+      DOM.quickRiskAccountSelect.value = prevSelected;
+    }
+    return;
+  }
+  state.riskAccountSelectSignature = sig;
+
+  DOM.quickRiskAccountSelect.innerHTML = '';
+  if (!state.accounts || state.accounts.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No Accounts';
+    DOM.quickRiskAccountSelect.appendChild(opt);
+    return;
+  }
+
+  state.accounts.forEach(acc => {
+    const opt = document.createElement('option');
+    opt.value = acc.id;
+    opt.textContent = `${acc.name} (${acc.broker.toUpperCase()})`;
+    DOM.quickRiskAccountSelect.appendChild(opt);
+  });
+
+  if (prevSelected && state.accounts.some(acc => acc.id === prevSelected)) {
+    DOM.quickRiskAccountSelect.value = prevSelected;
+  }
+  const activeId = DOM.quickRiskAccountSelect.value || state.accounts[0].id;
+  state.selectedRiskAccountId = activeId;
+  if (state.accountRiskInputsLoadedFor !== activeId) {
+    loadSelectedAccountRiskInputs(activeId);
+  } else {
+    updateQuickHints();
+  }
+}
+
+function loadSelectedAccountRiskInputs(accountId) {
+  const acc = state.accounts.find(a => a.id === accountId);
+  if (!acc) return;
+  state.selectedRiskAccountId = acc.id;
+  state.accountRiskInputsLoadedFor = acc.id;
+  try { localStorage.setItem('algo_selected_risk_account', acc.id); } catch (e) {}
+  const fallbackTarget = (state.riskSettings && state.riskSettings.targetDailyNetProfitPct) || 1.5;
+  const fallbackSl = (state.riskSettings && state.riskSettings.maxDailyLossNetPct) || 1.0;
+  const fallbackBuf = (state.riskSettings && state.riskSettings.nearThresholdBufferPct) || 98;
+  if (DOM.quickTargetPct) DOM.quickTargetPct.value = acc.targetNetProfitPct !== undefined ? acc.targetNetProfitPct : fallbackTarget;
+  if (DOM.quickStopLossPct) DOM.quickStopLossPct.value = acc.stopLossNetPct !== undefined ? acc.stopLossNetPct : fallbackSl;
+  if (DOM.quickNearBuffer) DOM.quickNearBuffer.value = acc.nearThresholdBufferPct !== undefined ? acc.nearThresholdBufferPct : fallbackBuf;
+  updateQuickHints();
+}
+
+// Recalculate quick hint labels based on selected account balance & daily order/risk settings
 function updateQuickHints() {
-  const bal = Number(state.openingBalance.openingBalance || 500000);
+  const selectedAcc = state.accounts.find(a => a.id === (DOM.quickRiskAccountSelect && DOM.quickRiskAccountSelect.value));
+  const accCap = selectedAcc && Number(selectedAcc.availableCash || 0) > 0
+    ? Number(selectedAcc.availableCash)
+    : Number(state.openingBalance.openingBalance || 500000);
+  const bal = Number(state.openingBalance.openingBalance || accCap || 500000);
   const deployPct = Math.max(1, Math.min(100, Number((DOM.quickCapitalDeployPct && DOM.quickCapitalDeployPct.value) || 100)));
   const targetPct = Number(DOM.quickTargetPct.value || 1.5);
   const nearBuf = Number(DOM.quickNearBuffer.value || 98);
@@ -286,10 +383,15 @@ function updateQuickHints() {
   const routing = (DOM.quickRoutingMode && DOM.quickRoutingMode.value === 'all_funded') ? 'all_funded' : 'selected';
 
   const deployInr = (bal * deployPct) / 100;
-  const targetInr = (bal * targetPct) / 100;
+  const targetInr = (accCap * targetPct) / 100;
   const nearInr = targetInr * (nearBuf / 100);
-  const stopInr = (bal * stopPct) / 100;
+  const stopInr = (accCap * stopPct) / 100;
 
+  if (DOM.quickAccRiskHint) {
+    DOM.quickAccRiskHint.textContent = selectedAcc
+      ? `${selectedAcc.name} • Cap: ₹${accCap.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+      : 'Per-account SL & Target';
+  }
   if (DOM.quickDeployInrHint) {
     DOM.quickDeployInrHint.textContent = `${deployPct}% (= ₹${deployInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })})`;
   }
@@ -362,13 +464,13 @@ function syncRiskSettingsToUI(risk = {}, dailyOrders = null, forceApply = false)
   if (DOM.quickCapitalDeployPct && risk.capitalDeployPct !== undefined) {
     DOM.quickCapitalDeployPct.value = risk.capitalDeployPct;
   }
-  if (DOM.quickTargetPct && risk.targetDailyNetProfitPct !== undefined) {
+  if (DOM.quickTargetPct && !state.accountRiskInputsLoadedFor && risk.targetDailyNetProfitPct !== undefined) {
     DOM.quickTargetPct.value = risk.targetDailyNetProfitPct;
   }
-  if (DOM.quickNearBuffer && risk.nearThresholdBufferPct !== undefined) {
+  if (DOM.quickNearBuffer && !state.accountRiskInputsLoadedFor && risk.nearThresholdBufferPct !== undefined) {
     DOM.quickNearBuffer.value = risk.nearThresholdBufferPct;
   }
-  if (DOM.quickStopLossPct && risk.maxDailyLossNetPct !== undefined) {
+  if (DOM.quickStopLossPct && !state.accountRiskInputsLoadedFor && risk.maxDailyLossNetPct !== undefined) {
     DOM.quickStopLossPct.value = risk.maxDailyLossNetPct;
   }
   if (DOM.quickMaxOrders && risk.maxDailyOrders !== undefined) {
@@ -398,6 +500,11 @@ function syncRiskSettingsToUI(risk = {}, dailyOrders = null, forceApply = false)
     }
   });
 });
+if (DOM.quickRiskAccountSelect) {
+  DOM.quickRiskAccountSelect.addEventListener('change', () => {
+    loadSelectedAccountRiskInputs(DOM.quickRiskAccountSelect.value);
+  });
+}
 if (DOM.quickRoutingMode) {
   DOM.quickRoutingMode.addEventListener('change', () => {
     applyRoutingModeSelection(DOM.quickRoutingMode.value, true);
@@ -409,6 +516,9 @@ if (DOM.quickRoutingMode) {
    ============================================================ */
 function initEventSource() {
   const es = new EventSource('/api/stream');
+  if (typeof window.attachOrderConfirmationStream === 'function') {
+    window.attachOrderConfirmationStream(es);
+  }
 
   es.addEventListener('connected', () => {
     DOM.connLabel.textContent = 'Live SSE Active';
@@ -468,6 +578,7 @@ function formatFeedSourceLabel(source) {
   if (source === 'angelone') return 'Angel One';
   if (source === 'dhan') return 'Dhan';
   if (source === 'sahi') return 'Sahi';
+  if (source === 'paper') return 'Paper Trading';
   return 'Kotak Neo';
 }
 
@@ -475,6 +586,7 @@ function getBrokerBadgeClass(broker) {
   if (broker === 'angelone') return 'badge-angelone';
   if (broker === 'dhan') return 'badge-dhan';
   if (broker === 'sahi') return 'badge-sahi';
+  if (broker === 'paper') return 'badge-paper';
   return 'badge-kotakneo';
 }
 
@@ -515,10 +627,19 @@ function handleMarketTick(payload) {
     state.accounts = payload.accounts;
     renderAccountsTable();
     updateBrokerSelect();
+    updateQuickRiskAccountSelect();
   }
 
   if (payload.rules) {
     state.rules = payload.rules;
+  }
+
+  if (payload.targetStates) {
+    state.targetStates = payload.targetStates;
+  }
+
+  if (payload.chargeSettings) {
+    state.chargeSettings = { ...state.chargeSettings, ...payload.chargeSettings };
   }
 
   if (payload.riskSettings || payload.dailyOrders) {
@@ -594,6 +715,10 @@ async function loadStatus() {
 
       renderAccountsTable();
       updateBrokerSelect();
+      updateQuickRiskAccountSelect();
+      if (data.chargeSettings) {
+        state.chargeSettings = { ...state.chargeSettings, ...data.chargeSettings };
+      }
       syncRiskSettingsToUI(data.riskSettings || {}, data.dailyOrders || null, !state.selectedRoutingMode);
       if (data.portfolioSchedule) updatePortfolioScheduleBadge(data.portfolioSchedule);
     }
@@ -698,6 +823,9 @@ async function loadOrders(force = false, manual = false) {
     if (data.success && Array.isArray(data.data)) {
       state.orders = data.data;
       renderOrdersTable();
+      if (state.positionFilter === 'per_trade' || DOM.positionFilterGroup) {
+        renderPositionsTable();
+      }
     }
   } catch (e) {}
 }
@@ -753,18 +881,136 @@ async function loadAccounts() {
       state.accounts = data.data;
       renderAccountsTable();
       updateBrokerSelect();
+      updateQuickRiskAccountSelect();
     }
   } catch (e) {}
 }
 
+function isExecutedOrderClient(ord = {}) {
+  const st = String(ord.status || '').trim().toUpperCase();
+  const filled = Number(ord.filledQuantity || ord.filledQty || 0);
+  if (st === 'REJECTED' || st === 'FAILED') return false;
+  if (st === 'CANCELLED' || st === 'CANCELED') return filled > 0;
+  return ['COMPLETE', 'COMPLETED', 'TRADED', 'FILLED', 'EXECUTED', 'PARTIALFILLED', 'PARTIAL_FILLED', 'PARTIALLY_FILLED'].includes(st) || filled > 0;
+}
+
+function getOrderFilterCategory(status) {
+  const st = String(status || '').trim().toUpperCase();
+  if (['COMPLETE', 'COMPLETED', 'TRADED', 'FILLED', 'EXECUTED'].includes(st)) return 'completed';
+  if (['REJECTED', 'FAILED'].includes(st)) return 'rejected';
+  if (['CANCELLED', 'CANCELED'].includes(st)) return 'cancelled';
+  return 'open';
+}
+
+function updateFilterButtonsUI(groupEl, attrName, activeVal, counts = null, labels = {}) {
+  if (!groupEl) return;
+  groupEl.querySelectorAll(`[${attrName}]`).forEach(btn => {
+    const val = btn.getAttribute(attrName);
+    const isActive = val === activeVal;
+    btn.classList.toggle('active', isActive);
+    btn.classList.toggle('btn-primary', isActive);
+    btn.classList.toggle('btn-outline', !isActive);
+    if (counts && labels[val]) {
+      btn.textContent = `${labels[val]} (${counts[val] || 0})`;
+    }
+  });
+}
+
+function renderPerTradeTable() {
+  if (!DOM.perTradeTableBody) return;
+  const executedTrades = (state.orders || []).filter(isExecutedOrderClient);
+  if (executedTrades.length === 0) {
+    DOM.perTradeTableBody.innerHTML = `<tr><td colspan="12" class="empty-state">No executed trades found in Order Book.</td></tr>`;
+    return;
+  }
+
+  DOM.perTradeTableBody.innerHTML = executedTrades.map(ord => {
+    const bClass = getBrokerBadgeClass(ord.broker);
+    const sideIsBuy = String(ord.transactionType || 'B').toUpperCase() !== 'S';
+    const qty = Number(ord.filledQuantity || 0) > 0 ? Number(ord.filledQuantity) : Number(ord.quantity || 0);
+    const execPx = Number(ord.avgPrice || ord.price || 0);
+    const cd = ord.chargeDetails || {};
+    const turnover = cd.totalTurnover !== undefined ? Number(cd.totalTurnover) : Number((qty * execPx).toFixed(2));
+    const brk = cd.brokerage !== undefined ? Number(cd.brokerage) : 0;
+    const totalChg = cd.totalCharges !== undefined ? Number(cd.totalCharges) : 0;
+    const otherChg = Math.max(0, Number((totalChg - brk).toFixed(2)));
+    const safeChargesJson = JSON.stringify(cd).replace(/'/g, '&#39;');
+
+    return `
+      <tr>
+        <td><span class="badge ${bClass}">${ord.brokerName || ord.broker}</span></td>
+        <td class="mono" style="font-size: 11px;">${ord.orderId || '--'}</td>
+        <td class="mono" style="font-size: 11px; color: var(--text-muted);">${ord.orderTime || '--'}</td>
+        <td><strong>${ord.symbol}</strong></td>
+        <td><span class="badge">${ord.product || 'MIS'}</span></td>
+        <td><span class="badge" style="${sideIsBuy ? 'background: var(--profit-bg); color: var(--profit-color);' : 'background: var(--loss-bg); color: var(--loss-color);'}">${sideIsBuy ? 'BUY' : 'SELL'}</span></td>
+        <td class="text-right mono">${qty}</td>
+        <td class="text-right mono">₹${execPx.toFixed(2)}</td>
+        <td class="text-right mono">${formatCurrency(turnover)}</td>
+        <td class="text-right mono">${formatCurrency(brk)}</td>
+        <td class="text-right mono">${formatCurrency(otherChg)}</td>
+        <td class="text-right mono">
+          <a href="#" class="view-charges-link" data-symbol="${ord.symbol}" data-charges='${safeChargesJson}'>
+            ${formatCurrency(totalChg)}
+          </a>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  DOM.perTradeTableBody.querySelectorAll('.view-charges-link').forEach(link => {
+    link.addEventListener('click', e => {
+      e.preventDefault();
+      const symbol = link.getAttribute('data-symbol');
+      const details = JSON.parse(link.getAttribute('data-charges') || '{}');
+      openChargesModal(symbol, details);
+    });
+  });
+}
+
 function renderPositionsTable() {
-  if (!state.positions || state.positions.length === 0) {
-    DOM.positionsTableBody.innerHTML = `<tr><td colspan="12" class="empty-state">No open positions across any broker. Place an order or execute a trade to see it here.</td></tr>`;
+  const allPos = state.positions || [];
+  const openList = allPos.filter(p => p.isOpen && p.netQty !== 0);
+  const closedList = allPos.filter(p => !p.isOpen || p.netQty === 0);
+  const execCount = (state.orders || []).filter(isExecutedOrderClient).length;
+
+  updateFilterButtonsUI(
+    DOM.positionFilterGroup,
+    'data-pos-filter',
+    state.positionFilter,
+    {
+      all: allPos.length,
+      open: openList.length,
+      closed: closedList.length,
+      per_trade: execCount
+    },
+    { all: 'All Net', open: 'Open', closed: 'Closed', per_trade: 'Per Trade' }
+  );
+
+  if (state.positionFilter === 'per_trade') {
+    if (DOM.netPositionsTableContainer) DOM.netPositionsTableContainer.style.display = 'none';
+    if (DOM.perTradeTableContainer) DOM.perTradeTableContainer.style.display = 'block';
+    renderPerTradeTable();
+    return;
+  }
+
+  if (DOM.netPositionsTableContainer) DOM.netPositionsTableContainer.style.display = 'block';
+  if (DOM.perTradeTableContainer) DOM.perTradeTableContainer.style.display = 'none';
+
+  const list = state.positionFilter === 'open'
+    ? openList
+    : (state.positionFilter === 'closed' ? closedList : allPos);
+
+  if (!list || list.length === 0) {
+    const msg = allPos.length === 0
+      ? 'No open positions across any broker. Place an order or execute a trade to see it here.'
+      : `No ${state.positionFilter} positions found.`;
+    DOM.positionsTableBody.innerHTML = `<tr><td colspan="12" class="empty-state">${msg}</td></tr>`;
     return;
   }
 
   let html = '';
-  state.positions.forEach(pos => {
+  list.forEach(pos => {
     const key = `${pos.accountId}_${pos.symbol}_${pos.product}`;
     const generalKey = `any_${pos.symbol}_${pos.product}`;
     const rule = state.rules[key] || state.rules[generalKey];
@@ -787,6 +1033,15 @@ function renderPositionsTable() {
       if (rule.targetNetProfitPct) parts.push(`Target: +${rule.targetNetProfitPct}% (near ${rule.nearThresholdBufferPct || 98}%)`);
       if (rule.stopLossNetPct) parts.push(`SL: -${rule.stopLossNetPct}%`);
       ruleBadge = `<span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8;">${parts.join(' | ')}</span>`;
+    }
+    const ts = state.targetStates && state.targetStates[key];
+    if (ts && pos.isOpen) {
+      const tsLabel = ts.stage === 'TRAILING'
+        ? `Trailing SL ₹${ts.slTriggerPrice} (${ts.slQty} qty)`
+        : (ts.stage === 'BREAKEVEN_SL_PLACED'
+          ? `50% Hit • SL ₹${ts.slTriggerPrice}`
+          : `50%: ₹${ts.halfTargetPrice} | 100%: ₹${ts.fullTargetPrice}`);
+      ruleBadge += ` <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #10b981; margin-left:4px;">${tsLabel}</span>`;
     }
 
     html += `
@@ -850,12 +1105,27 @@ function renderPositionsTable() {
       const sym = btn.getAttribute('data-symbol');
       const prod = btn.getAttribute('data-product');
       const acc = btn.getAttribute('data-acc');
-      if (confirm(`Exit position ${sym} at MARKET price now?`)) {
+      const posObj = (state.positions || []).find(p => p.symbol === sym && p.accountId === acc) || {};
+      const ok = typeof window.confirmOrderBeforeSend === 'function'
+        ? await window.confirmOrderBeforeSend({
+            title: 'Confirm Square-Off Exit Order',
+            sourceLabel: 'Manual Position Exit',
+            brokerLabel: posObj.brokerName || posObj.broker || acc,
+            transactionType: Number(posObj.netQty || 0) < 0 ? 'B' : 'S',
+            symbol: sym,
+            product: prod,
+            orderType: 'MKT',
+            quantity: Math.abs(Number(posObj.netQty || 0)),
+            ltp: posObj.ltp,
+            reason: `Exit ${sym} (${prod}) at MARKET now`
+          })
+        : confirm(`Exit position ${sym} at MARKET price now?`);
+      if (ok) {
         try {
           const res = await fetch('/api/autoexit/exit-position', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbol: sym, product: prod, accountId: acc, reason: 'Manual Row Exit' })
+            body: JSON.stringify({ symbol: sym, product: prod, accountId: acc, reason: 'Manual Row Exit', userConfirmed: true })
           });
           const d = await res.json();
           if (d.success) {
@@ -897,17 +1167,45 @@ function renderHoldingsTable() {
 }
 
 function renderOrdersTable() {
-  if (!state.orders || state.orders.length === 0) {
+  const allOrders = state.orders || [];
+  const counts = { all: allOrders.length, completed: 0, open: 0, rejected: 0, cancelled: 0 };
+  allOrders.forEach(ord => {
+    const cat = getOrderFilterCategory(ord.status);
+    counts[cat] = (counts[cat] || 0) + 1;
+  });
+
+  updateFilterButtonsUI(
+    DOM.orderStatusFilterGroup,
+    'data-order-filter',
+    state.orderFilter,
+    counts,
+    { all: 'All', completed: 'Completed', open: 'Open', rejected: 'Rejected', cancelled: 'Cancelled' }
+  );
+
+  DOM.ordersTabBadge.textContent = counts.open;
+
+  if (allOrders.length === 0) {
     DOM.ordersTableBody.innerHTML = `<tr><td colspan="9" class="empty-state">No orders in history.</td></tr>`;
-    DOM.ordersTabBadge.textContent = '0';
     return;
   }
 
-  DOM.ordersTabBadge.textContent = state.orders.filter(o => o.status === 'OPEN' || o.status === 'PENDING').length;
+  const filteredOrders = state.orderFilter === 'all'
+    ? allOrders
+    : allOrders.filter(o => getOrderFilterCategory(o.status) === state.orderFilter);
+
+  if (filteredOrders.length === 0) {
+    DOM.ordersTableBody.innerHTML = `<tr><td colspan="9" class="empty-state">No ${state.orderFilter} orders found.</td></tr>`;
+    return;
+  }
 
   let html = '';
-  state.orders.forEach(ord => {
+  filteredOrders.forEach(ord => {
     const bClass = getBrokerBadgeClass(ord.broker);
+    const cat = getOrderFilterCategory(ord.status);
+    let statusStyle = '';
+    if (cat === 'completed') statusStyle = 'background: var(--profit-bg); color: var(--profit-color);';
+    else if (cat === 'rejected') statusStyle = 'background: var(--loss-bg); color: var(--loss-color);';
+    else if (cat === 'cancelled') statusStyle = 'background: var(--warning-bg); color: var(--warning-color);';
 
     html += `
       <tr>
@@ -919,7 +1217,7 @@ function renderOrdersTable() {
         <td><span class="badge">${ord.orderType}</span></td>
         <td class="text-right mono">${ord.filledQuantity || ord.quantity}/${ord.quantity}</td>
         <td class="text-right mono">₹${Number(ord.price || 0).toFixed(2)}</td>
-        <td><span class="badge" style="${ord.status === 'COMPLETE' ? 'background: var(--profit-bg); color: var(--profit-color);' : ''}">${ord.status}</span></td>
+        <td><span class="badge" style="${statusStyle}">${ord.status}</span></td>
       </tr>
     `;
   });
@@ -930,7 +1228,7 @@ function renderAccountsTable() {
   DOM.accountsBtnText.textContent = `Brokers (${state.accounts.filter(a => a.enabled).length} Active)`;
 
   if (!state.accounts || state.accounts.length === 0) {
-    DOM.accountsTableBody.innerHTML = `<tr><td colspan="7" class="empty-state">No broker accounts configured.</td></tr>`;
+    DOM.accountsTableBody.innerHTML = `<tr><td colspan="8" class="empty-state">No broker accounts configured.</td></tr>`;
     return;
   }
 
@@ -939,7 +1237,15 @@ function renderAccountsTable() {
     const bClass = getBrokerBadgeClass(acc.broker);
     const brkLabel = acc.brokerageType === 'zero' || acc.brokeragePerOrder === 0
       ? '₹0/order'
-      : (acc.brokerageType === 'custom' ? `Custom (₹${acc.brokeragePerOrder}/ord)` : `₹${acc.brokeragePerOrder ?? 20}/order`);
+      : `₹${acc.brokeragePerOrder ?? 20}/order`;
+    const targetPct = acc.targetNetProfitPct !== undefined ? Number(acc.targetNetProfitPct) : 1.5;
+    const stopPct = acc.stopLossNetPct !== undefined ? Number(acc.stopLossNetPct) : 1.0;
+    const balText = acc.availableCash !== undefined && acc.availableCash !== null
+      ? formatCurrency(acc.availableCash)
+      : (acc.broker === 'paper' && acc.initialBalance ? formatCurrency(acc.initialBalance) : '--');
+    const paperResetBtn = acc.broker === 'paper'
+      ? `<button class="btn-xs btn-outline reset-paper-btn" data-id="${acc.id}" title="Reset paper funds, positions & orders">Reset Paper</button>`
+      : '';
 
     html += `
       <tr>
@@ -947,16 +1253,20 @@ function renderAccountsTable() {
         <td><strong>${acc.name}</strong></td>
         <td class="mono">${acc.clientCode || 'Configured'}</td>
         <td class="mono">${brkLabel}</td>
+        <td class="mono">
+          <span class="profit-text">+${targetPct}%</span> / <span class="loss-text">-${stopPct}%</span>
+        </td>
         <td>
           <span class="badge" style="${acc.isAuthenticated ? 'background: var(--profit-bg); color: var(--profit-color);' : (acc.lastError ? 'background: var(--loss-bg); color: var(--loss-color);' : 'background: var(--warning-bg); color: var(--warning-color);')}">
-            ${acc.isAuthenticated ? 'AUTHENTICATED' : (acc.lastError ? 'AUTH ERROR' : 'READY')}
+            ${acc.isAuthenticated ? (acc.broker === 'paper' ? 'PAPER ACTIVE' : 'AUTHENTICATED') : (acc.lastError ? 'AUTH ERROR' : 'READY')}
           </span>
           ${acc.lastError ? `<div style="font-size: 10px; color: var(--loss-color); margin-top: 3px; max-width: 260px;">${toDisplayText(acc.lastError)}</div>` : ''}
         </td>
-        <td class="mono">${acc.enabled ? 'Active' : 'Disabled'}</td>
+        <td class="mono">${balText}</td>
         <td>
           <button class="btn-xs btn-outline edit-acc-btn" data-id="${acc.id}">Edit</button>
           <button class="btn-xs btn-outline test-acc-btn" data-id="${acc.id}">Test Login</button>
+          ${paperResetBtn}
           <button class="btn-xs btn-outline delete-acc-btn" data-id="${acc.id}">Delete</button>
         </td>
       </tr>
@@ -969,6 +1279,34 @@ function renderAccountsTable() {
       const id = btn.getAttribute('data-id');
       const acc = state.accounts.find(a => a.id === id);
       if (acc) openEditAccountModal(acc);
+    });
+  });
+
+  document.querySelectorAll('.reset-paper-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id');
+      const acc = state.accounts.find(a => a.id === id);
+      const currentBal = (acc && acc.initialBalance) || 500000;
+      const entered = prompt(`Reset Paper Account "${acc ? acc.name : id}"?\nEnter starting virtual capital (₹):`, currentBal);
+      if (!entered || Number(entered) <= 0) return;
+      try {
+        const res = await fetch(`/api/accounts/${id}/paper-reset`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initialBalance: Number(entered) })
+        });
+        const d = await res.json();
+        if (d.success) {
+          showToast(`Paper account reset to ${formatCurrency(Number(entered))}`, 'success');
+          loadAccounts();
+          loadPositions();
+          loadOrders();
+        } else {
+          showToast(d.message || 'Failed to reset paper account', 'error');
+        }
+      } catch (e) {
+        showToast(e.message, 'error');
+      }
     });
   });
 
@@ -1024,9 +1362,22 @@ function renderAccountsTable() {
    MODALS & CHARGES BREAKDOWN
    ============================================================ */
 function openChargesModal(symbol, details) {
+  const orderCount = details.orderSides !== undefined ? Number(details.orderSides) : 0;
+  const brkPerOrd = details.brokeragePerOrder !== undefined ? details.brokeragePerOrder : 20;
+  const orderMix = (details.buyOrders !== undefined && details.sellOrders !== undefined)
+    ? ` [${details.buyOrders} Buy + ${details.sellOrders} Sell]`
+    : '';
+  const sourceLabel = details.chargeSource === 'orders'
+    ? 'Executed Orders'
+    : 'Estimated (Position)';
+
   DOM.chargesModalContent.innerHTML = `
     <div style="font-size: 13px; line-height: 1.8;">
       <h4 style="margin-bottom: 12px; color: #fff;">Charges for <strong>${symbol}</strong></h4>
+      <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
+        <span>Calculation Basis:</span>
+        <strong class="mono">${sourceLabel}</strong>
+      </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
         <span>Buy Turnover / Sell Turnover:</span>
         <strong class="mono">₹${details.buyTurnover ? details.buyTurnover.toLocaleString('en-IN') : '0.00'} / ₹${details.sellTurnover ? details.sellTurnover.toLocaleString('en-IN') : '0.00'}</strong>
@@ -1040,7 +1391,7 @@ function openChargesModal(symbol, details) {
         <strong class="mono">₹${details.buySideCharges !== undefined ? details.buySideCharges.toFixed(2) : '0.00'} / ₹${details.sellSideCharges !== undefined ? details.sellSideCharges.toFixed(2) : '0.00'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
-        <span>Brokerage (${details.orderSides || 2} orders &times; ₹${details.brokeragePerOrder !== undefined ? details.brokeragePerOrder : 20}/ord):</span>
+        <span>Brokerage (${orderCount} ${orderCount === 1 ? 'order' : 'orders'}${orderMix} &times; ₹${brkPerOrd}/ord):</span>
         <strong class="mono">₹${details.brokerage !== undefined ? details.brokerage.toFixed(2) : '0.00'}</strong>
       </div>
       ${details.dpCharges ? `<div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
@@ -1052,7 +1403,7 @@ function openChargesModal(symbol, details) {
         <strong class="mono">₹${details.delayedCharges.toFixed(2)}</strong>
       </div>` : ''}
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
-        <span>Securities Transaction Tax (STT):</span>
+        <span>Securities Transaction Tax (STT - Sell side):</span>
         <strong class="mono">₹${details.stt !== undefined ? details.stt.toFixed(2) : '0.00'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
@@ -1064,16 +1415,16 @@ function openChargesModal(symbol, details) {
         <strong class="mono">₹${details.ipft !== undefined ? details.ipft.toFixed(4) : '0.0000'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
-        <span>GST (18% on Brk, DP, Exch, IPFT, SEBI, Delayed):</span>
+        <span>GST (18% on Brk, SEBI, Exch Txn, IPFT):</span>
         <strong class="mono">₹${details.gst !== undefined ? details.gst.toFixed(2) : '0.00'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
-        <span>Stamp Duty:</span>
-        <strong class="mono">₹${details.stampDuty ? details.stampDuty.toFixed(2) : '0.00'}</strong>
+        <span>Stamp Duty (Buy side):</span>
+        <strong class="mono">₹${details.stampDuty !== undefined ? details.stampDuty.toFixed(2) : '0.00'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 4px 0;">
         <span>SEBI Turnover Charges:</span>
-        <strong class="mono">₹${details.sebi ? details.sebi.toFixed(2) : '0.00'}</strong>
+        <strong class="mono">₹${details.sebi !== undefined ? details.sebi.toFixed(2) : '0.00'}</strong>
       </div>
       <div style="display: flex; justify-content: space-between; margin-top: 10px; padding: 6px 0; font-size: 14px; color: var(--loss-color);">
         <span>TOTAL ESTIMATED CHARGES:</span>
@@ -1084,6 +1435,86 @@ function openChargesModal(symbol, details) {
   DOM.chargesModal.classList.add('active');
 }
 DOM.closeChargesModal.addEventListener('click', () => DOM.chargesModal.classList.remove('active'));
+
+// Statutory Charges Settings Popup Modal
+const DEFAULT_CHARGE_SETTINGS = {
+  sttPct: 0.15,
+  exchangeTxnPct: 0.03553,
+  sebiPerCrore: 10,
+  ipftPerCrore: 0.01,
+  stampDutyBuyPct: 0.003,
+  gstPct: 18
+};
+
+function populateChargeSettingsForm(cfg = {}) {
+  const s = { ...DEFAULT_CHARGE_SETTINGS, ...cfg };
+  if (DOM.chgSttPct) DOM.chgSttPct.value = s.sttPct;
+  if (DOM.chgExchTxnPct) DOM.chgExchTxnPct.value = s.exchangeTxnPct;
+  if (DOM.chgSebiPerCrore) DOM.chgSebiPerCrore.value = s.sebiPerCrore;
+  if (DOM.chgIpftPerCrore) DOM.chgIpftPerCrore.value = s.ipftPerCrore;
+  if (DOM.chgStampDutyBuyPct) DOM.chgStampDutyBuyPct.value = s.stampDutyBuyPct;
+  if (DOM.chgGstPct) DOM.chgGstPct.value = s.gstPct;
+}
+
+if (DOM.openChargeSettingsBtn && DOM.chargeSettingsModal) {
+  DOM.openChargeSettingsBtn.addEventListener('click', async () => {
+    populateChargeSettingsForm(state.chargeSettings);
+    DOM.chargeSettingsModal.classList.add('active');
+    try {
+      const res = await fetch('/api/charge-settings');
+      const d = await res.json();
+      if (d.success && d.chargeSettings) {
+        state.chargeSettings = { ...DEFAULT_CHARGE_SETTINGS, ...d.chargeSettings };
+        populateChargeSettingsForm(state.chargeSettings);
+      }
+    } catch (e) {}
+  });
+}
+
+if (DOM.closeChargeSettingsModal && DOM.chargeSettingsModal) {
+  DOM.closeChargeSettingsModal.addEventListener('click', () => {
+    DOM.chargeSettingsModal.classList.remove('active');
+  });
+}
+
+if (DOM.resetChargeDefaultsBtn) {
+  DOM.resetChargeDefaultsBtn.addEventListener('click', () => {
+    populateChargeSettingsForm(DEFAULT_CHARGE_SETTINGS);
+    showToast('Reset statutory charge inputs to defaults (click Save Charges to apply)', 'info');
+  });
+}
+
+if (DOM.chargeSettingsForm) {
+  DOM.chargeSettingsForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const payload = {
+      sttPct: Number(DOM.chgSttPct.value),
+      exchangeTxnPct: Number(DOM.chgExchTxnPct.value),
+      sebiPerCrore: Number(DOM.chgSebiPerCrore.value),
+      ipftPerCrore: Number(DOM.chgIpftPerCrore.value),
+      stampDutyBuyPct: Number(DOM.chgStampDutyBuyPct.value),
+      gstPct: Number(DOM.chgGstPct.value)
+    };
+    try {
+      const res = await fetch('/api/charge-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const d = await res.json();
+      if (d.success) {
+        state.chargeSettings = { ...DEFAULT_CHARGE_SETTINGS, ...d.chargeSettings };
+        DOM.chargeSettingsModal.classList.remove('active');
+        showToast('Options statutory charge rates saved & applied!', 'success');
+        loadPositions();
+      } else {
+        showToast(d.message || 'Failed to save charge settings', 'error');
+      }
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  });
+}
 
 // Position Auto-Exit Rule Modal
 function openAutoExitModal(symbol, product, accountId) {
@@ -1166,8 +1597,9 @@ DOM.deleteRuleBtn.addEventListener('click', async () => {
   loadPositions();
 });
 
-// Quick Global Order & Net Profit % Rule apply on page
+// Quick Per-Account SL/Target & Global Day Order Settings apply on page
 DOM.applyGlobalRuleBtn.addEventListener('click', async () => {
+  const selectedRiskAccId = DOM.quickRiskAccountSelect ? DOM.quickRiskAccountSelect.value : '';
   const capitalDeployPct = Math.max(1, Math.min(100, Number((DOM.quickCapitalDeployPct && DOM.quickCapitalDeployPct.value) || 100)));
   const targetPct = Number(DOM.quickTargetPct.value || 1.5);
   const nearBuf = Number(DOM.quickNearBuffer.value || 98);
@@ -1175,8 +1607,27 @@ DOM.applyGlobalRuleBtn.addEventListener('click', async () => {
   const maxDailyOrders = Math.max(0, Math.round(Number((DOM.quickMaxOrders && DOM.quickMaxOrders.value) || 0)));
   const orderRoutingMode = (DOM.quickRoutingMode && DOM.quickRoutingMode.value === 'all_funded') ? 'all_funded' : 'selected';
 
-  // Apply Net Profit % rules to all currently open positions
-  const openPos = state.positions.filter(p => p.isOpen && p.netQty !== 0);
+  // Persist selected account's per-account SL & Target
+  if (selectedRiskAccId) {
+    const accRes = await fetch(`/api/accounts/${selectedRiskAccId}/risk-settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetNetProfitPct: targetPct,
+        stopLossNetPct: stopLossPct,
+        nearThresholdBufferPct: nearBuf
+      })
+    });
+    const accData = await accRes.json();
+    if (accData && accData.success && Array.isArray(accData.accounts)) {
+      state.accounts = accData.accounts;
+      renderAccountsTable();
+      updateQuickRiskAccountSelect();
+    }
+  }
+
+  // Apply Net Profit % rules to open positions for the selected account (or all if none selected)
+  const openPos = state.positions.filter(p => p.isOpen && p.netQty !== 0 && (!selectedRiskAccId || p.accountId === selectedRiskAccId));
   for (const pos of openPos) {
     await fetch('/api/autoexit/rules', {
       method: 'POST',
@@ -1214,8 +1665,10 @@ DOM.applyGlobalRuleBtn.addEventListener('click', async () => {
     syncRiskSettingsToUI(d.riskSettings, d.dailyOrders, true);
   }
   refreshOrderSizingFromBalance();
+  const accObj = state.accounts.find(a => a.id === selectedRiskAccId);
+  const accLabel = accObj ? `${accObj.name} ` : '';
   showToast(
-    `Saved settings: Deploy ${capitalDeployPct}%, Net Target +${targetPct}%, Max Loss -${stopLossPct}%, Max Orders ${maxDailyOrders || '∞'}, Routing: ${orderRoutingMode === 'all_funded' ? 'All Funded Brokers' : 'Selected Broker'}`,
+    `Saved ${accLabel}SL/Target (+${targetPct}% / -${stopLossPct}%) & Day Settings: Deploy ${capitalDeployPct}%, Max Orders ${maxDailyOrders || '∞'}, Routing: ${orderRoutingMode === 'all_funded' ? 'All Funded Brokers' : 'Selected Broker'}`,
     'success'
   );
   loadPositions();
@@ -1270,12 +1723,14 @@ DOM.openAccountsBtn.addEventListener('click', () => {
   loadAccounts();
 });
 
-DOM.addNewAccountBtn.addEventListener('click', () => {
-  DOM.accountModalTitle.textContent = 'Add Broker Account';
+function openAddAccountModal(defaultBroker = 'kotakneo') {
+  DOM.accountModalTitle.textContent = defaultBroker === 'paper'
+    ? 'Add Paper Trading Account (Options)'
+    : 'Add Broker Account';
   DOM.editAccountId.value = '';
   DOM.accBroker.disabled = false;
-  DOM.accBroker.value = 'kotakneo';
-  DOM.accName.value = '';
+  DOM.accBroker.value = defaultBroker;
+  DOM.accName.value = defaultBroker === 'paper' ? 'NIFTY Options Paper Account' : '';
   DOM.kotakConsumerKey.value = '';
   DOM.kotakMobile.value = '';
   DOM.kotakUcc.value = '';
@@ -1291,17 +1746,26 @@ DOM.addNewAccountBtn.addEventListener('click', () => {
   if (DOM.sahiSecret) DOM.sahiSecret.value = '';
   if (DOM.sahiTotpSecret) DOM.sahiTotpSecret.value = '';
   if (DOM.sahiAccessToken) DOM.sahiAccessToken.value = '';
-  applyBrokerageDefaults('kotakneo');
-  switchBrokerFields('kotakneo');
+  if (DOM.paperInitialBalance) DOM.paperInitialBalance.value = '500000';
+  if (DOM.accTargetNetPct) DOM.accTargetNetPct.value = '1.5';
+  if (DOM.accStopLossNetPct) DOM.accStopLossNetPct.value = '1.0';
+  if (DOM.accNearBufferPct) DOM.accNearBufferPct.value = '98';
+  applyBrokerageDefaults(defaultBroker);
+  switchBrokerFields(defaultBroker);
   DOM.accountModal.classList.add('active');
-});
+}
+
+DOM.addNewAccountBtn.addEventListener('click', () => openAddAccountModal('kotakneo'));
+if (DOM.addPaperAccountBtn) {
+  DOM.addPaperAccountBtn.addEventListener('click', () => openAddAccountModal('paper'));
+}
 DOM.closeAccountModal.addEventListener('click', () => DOM.accountModal.classList.remove('active'));
 
 function applyBrokerageDefaults(broker) {
   if (!DOM.accBrokerageType) return;
-  const isKotak = broker === 'kotakneo';
-  DOM.accBrokerageType.value = isKotak ? 'zero' : 'flat';
-  DOM.accBrokeragePerOrder.value = isKotak ? '0' : '20';
+  const isZero = broker === 'kotakneo';
+  DOM.accBrokerageType.value = isZero ? 'zero' : 'flat';
+  DOM.accBrokeragePerOrder.value = isZero ? '0' : '20';
   updateBrokerageFieldsUI();
 }
 
@@ -1311,14 +1775,9 @@ function updateBrokerageFieldsUI() {
   if (type === 'zero') {
     DOM.accBrokeragePerOrder.value = '0';
     DOM.accBrokeragePerOrder.disabled = true;
-    DOM.customBrokerageFields.style.display = 'none';
-  } else if (type === 'flat') {
-    DOM.accBrokeragePerOrder.disabled = false;
-    if (DOM.accBrokeragePerOrder.value === '0') DOM.accBrokeragePerOrder.value = '20';
-    DOM.customBrokerageFields.style.display = 'none';
   } else {
     DOM.accBrokeragePerOrder.disabled = false;
-    DOM.customBrokerageFields.style.display = 'grid';
+    if (DOM.accBrokeragePerOrder.value === '0') DOM.accBrokeragePerOrder.value = '20';
   }
 }
 
@@ -1352,16 +1811,16 @@ function openEditAccountModal(acc) {
   if (DOM.sahiSecret) DOM.sahiSecret.value = '';
   if (DOM.sahiTotpSecret) DOM.sahiTotpSecret.value = '';
   if (DOM.sahiAccessToken) DOM.sahiAccessToken.value = '';
+  if (DOM.paperInitialBalance) DOM.paperInitialBalance.value = acc.initialBalance || 500000;
 
   if (DOM.accBrokerageType) {
-    DOM.accBrokerageType.value = acc.brokerageType || (acc.brokeragePerOrder === 0 ? 'zero' : 'flat');
+    DOM.accBrokerageType.value = acc.brokeragePerOrder === 0 || acc.brokerageType === 'zero' ? 'zero' : 'flat';
     DOM.accBrokeragePerOrder.value = acc.brokeragePerOrder !== undefined ? acc.brokeragePerOrder : (acc.broker === 'kotakneo' ? 0 : 20);
-    DOM.accOptionsBrokerage.value = acc.optionsBrokerage !== undefined ? acc.optionsBrokerage : '';
-    DOM.accFuturesBrokerage.value = acc.futuresBrokerage !== undefined ? acc.futuresBrokerage : '';
-    DOM.accIntradayBrokerage.value = acc.equityIntradayBrokerage !== undefined ? acc.equityIntradayBrokerage : '';
-    DOM.accDeliveryBrokerage.value = acc.deliveryBrokerage !== undefined ? acc.deliveryBrokerage : '';
     updateBrokerageFieldsUI();
   }
+  if (DOM.accTargetNetPct) DOM.accTargetNetPct.value = acc.targetNetProfitPct !== undefined ? acc.targetNetProfitPct : 1.5;
+  if (DOM.accStopLossNetPct) DOM.accStopLossNetPct.value = acc.stopLossNetPct !== undefined ? acc.stopLossNetPct : 1.0;
+  if (DOM.accNearBufferPct) DOM.accNearBufferPct.value = acc.nearThresholdBufferPct !== undefined ? acc.nearThresholdBufferPct : 98;
 
   switchBrokerFields(acc.broker);
   DOM.accountModal.classList.add('active');
@@ -1379,6 +1838,7 @@ function switchBrokerFields(broker) {
   DOM.angelFields.style.display = broker === 'angelone' ? 'block' : 'none';
   DOM.dhanFields.style.display = broker === 'dhan' ? 'block' : 'none';
   if (DOM.sahiFields) DOM.sahiFields.style.display = broker === 'sahi' ? 'block' : 'none';
+  if (DOM.paperFields) DOM.paperFields.style.display = broker === 'paper' ? 'block' : 'none';
 }
 
 function buildAccountPayloadFromModal() {
@@ -1408,20 +1868,19 @@ function buildAccountPayloadFromModal() {
     payload.secret = DOM.sahiSecret ? DOM.sahiSecret.value.trim() : '';
     payload.totpSecret = DOM.sahiTotpSecret ? DOM.sahiTotpSecret.value.trim() : '';
     payload.accessToken = DOM.sahiAccessToken ? DOM.sahiAccessToken.value.trim() : '';
+  } else if (broker === 'paper') {
+    payload.initialBalance = Math.max(1000, Number((DOM.paperInitialBalance && DOM.paperInitialBalance.value) || 500000));
   }
 
   if (DOM.accBrokerageType) {
-    payload.brokerageType = DOM.accBrokerageType.value;
+    payload.brokerageType = DOM.accBrokerageType.value === 'zero' ? 'zero' : 'flat';
     payload.brokeragePerOrder = DOM.accBrokerageType.value === 'zero'
       ? 0
       : Math.max(0, Number(DOM.accBrokeragePerOrder.value || 0));
-    if (DOM.accBrokerageType.value === 'custom') {
-      if (DOM.accOptionsBrokerage.value !== '') payload.optionsBrokerage = Number(DOM.accOptionsBrokerage.value);
-      if (DOM.accFuturesBrokerage.value !== '') payload.futuresBrokerage = Number(DOM.accFuturesBrokerage.value);
-      if (DOM.accIntradayBrokerage.value !== '') payload.equityIntradayBrokerage = Number(DOM.accIntradayBrokerage.value);
-      if (DOM.accDeliveryBrokerage.value !== '') payload.deliveryBrokerage = Number(DOM.accDeliveryBrokerage.value);
-    }
   }
+  if (DOM.accTargetNetPct) payload.targetNetProfitPct = Math.max(0, Number(DOM.accTargetNetPct.value || 1.5));
+  if (DOM.accStopLossNetPct) payload.stopLossNetPct = Math.max(0, Number(DOM.accStopLossNetPct.value || 1.0));
+  if (DOM.accNearBufferPct) payload.nearThresholdBufferPct = Math.max(50, Math.min(100, Number(DOM.accNearBufferPct.value || 98)));
 
   if (DOM.accOneTimeTotp && DOM.accOneTimeTotp.value.trim()) {
     payload.totp = DOM.accOneTimeTotp.value.trim();
@@ -1432,7 +1891,7 @@ function buildAccountPayloadFromModal() {
 if (DOM.testAccConnBtn) {
   DOM.testAccConnBtn.addEventListener('click', async () => {
     const payload = buildAccountPayloadFromModal();
-    if (!payload.totp && payload.broker !== 'dhan' && payload.broker !== 'sahi' && !payload.totpSecret) {
+    if (!payload.totp && payload.broker !== 'dhan' && payload.broker !== 'sahi' && payload.broker !== 'paper' && !payload.totpSecret) {
       const entered = prompt('Enter 6-digit TOTP to test connection:');
       if (entered) payload.totp = entered.trim();
     }
@@ -1839,6 +2298,7 @@ function updateOrderFreezePreview() {
   const fq = Number(lastOrderSpec.freezeQty || 0);
   const lot = Number(lastOrderSpec.lotSize || 1);
   const bal = Number(lastOrderSpec.availableCash || 0);
+  const openBal = Number(lastOrderSpec.openingBalance || 0);
   const usable = Number(lastOrderSpec.usableCash !== undefined ? lastOrderSpec.usableCash : bal);
   const deployPct = Number(lastOrderSpec.capitalDeployPct || 100);
   const rate = Number(lastOrderSpec.price || 0);
@@ -1849,7 +2309,10 @@ function updateOrderFreezePreview() {
     ? ` • Need ₹${(lot * rate).toFixed(2)} for 1 lot`
     : '';
   const rateStr = rate > 0 ? ` | Rate: ₹${rate.toFixed(2)}` : '';
-  const deployStr = deployPct < 100 ? ` (Deploy ${deployPct}%: ₹${usable.toLocaleString('en-IN')})` : '';
+  const openCapNote = openBal > 0 ? ` | Open: ₹${openBal.toLocaleString('en-IN')}` : '';
+  const deployStr = deployPct < 100
+    ? ` (Deploy ${deployPct}%: ₹${usable.toLocaleString('en-IN')})`
+    : (openBal > 0 && openBal !== bal ? ` -> Min: ₹${usable.toLocaleString('en-IN')}` : '');
 
   if (lastOrderSpec.routingMode === 'all_funded' && Array.isArray(lastOrderSpec.eligibleBrokers)) {
     const elig = lastOrderSpec.eligibleBrokers;
@@ -1862,7 +2325,7 @@ function updateOrderFreezePreview() {
     return;
   }
 
-  DOM.orderSizingHint.textContent = `Balance: ₹${bal.toLocaleString('en-IN')}${deployStr}${rateStr} | Lot: ${lot} | Freeze: ${fq > 0 ? fq : 'None'}${splitStr}${insuffStr}`;
+  DOM.orderSizingHint.textContent = `Avail: ₹${bal.toLocaleString('en-IN')}${openCapNote}${deployStr}${rateStr} | Lot: ${lot} | Freeze: ${fq > 0 ? fq : 'None'}${splitStr}${insuffStr}`;
 }
 
 async function refreshOrderSizingFromBalance() {
@@ -2020,8 +2483,23 @@ DOM.orderForm.addEventListener('submit', async e => {
     autoQuantity: Boolean(DOM.orderAutoQty && DOM.orderAutoQty.checked),
     price: ot === 'MKT' ? 0 : enteredPrice,
     triggerPrice: ot === 'SL' ? triggerPrice : 0,
-    ltp: Number(orderUiState.liveLtp || enteredPrice || 0)
+    ltp: Number(orderUiState.liveLtp || enteredPrice || 0),
+    userConfirmed: true
   };
+
+  const selectedOpt = DOM.orderBrokerSelect && DOM.orderBrokerSelect.options[DOM.orderBrokerSelect.selectedIndex];
+  const brokerLabel = routingMode === 'all_funded'
+    ? 'All Funded Brokers'
+    : ((selectedOpt && selectedOpt.textContent) || payload.accountId);
+
+  if (typeof window.confirmOrderBeforeSend === 'function') {
+    const confirmed = await window.confirmOrderBeforeSend({
+      ...payload,
+      brokerLabel,
+      sourceLabel: 'Order Panel Confirmation'
+    });
+    if (!confirmed) return;
+  }
 
   DOM.submitOrderBtn.disabled = true;
   try {
@@ -2057,11 +2535,25 @@ DOM.orderForm.addEventListener('submit', async e => {
 
 // Panic Actions
 DOM.exitAllBtn.addEventListener('click', async () => {
-  if (confirm('🚨 EMERGENCY: Square-off ALL positions across Angel One, Dhan, and Kotak Neo now?')) {
+  const openCount = (state.positions || []).filter(p => p.isOpen && p.netQty !== 0).length;
+  const ok = typeof window.confirmOrderBeforeSend === 'function'
+    ? await window.confirmOrderBeforeSend({
+        title: 'Confirm Emergency Exit All',
+        sourceLabel: 'Panic Square-Off Across All Brokers',
+        brokerLabel: 'All Connected Brokers',
+        transactionType: 'S',
+        symbol: `${openCount} Open Position(s)`,
+        product: 'ALL',
+        orderType: 'MKT',
+        quantity: openCount,
+        reason: 'Emergency Square-Off ALL open positions across all brokers now?'
+      })
+    : confirm('🚨 EMERGENCY: Square-off ALL positions across all brokers now?');
+  if (ok) {
     const res = await fetch('/api/autoexit/exit-all', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: 'Emergency Panic Button' })
+      body: JSON.stringify({ reason: 'Emergency Panic Button', userConfirmed: true })
     });
     const d = await res.json();
     if (d.success) {
@@ -2099,7 +2591,32 @@ DOM.tabBtns.forEach(btn => {
 if (DOM.fetchPortfolioBtn) {
   DOM.fetchPortfolioBtn.addEventListener('click', fetchAllPortfolioNow);
 }
-DOM.refreshPositionsBtn.addEventListener('click', () => loadPositions(true, true));
+if (DOM.positionFilterGroup) {
+  DOM.positionFilterGroup.querySelectorAll('[data-pos-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.positionFilter = btn.getAttribute('data-pos-filter') || 'all';
+      if (state.positionFilter === 'per_trade' && (!state.orders || state.orders.length === 0)) {
+        loadOrders();
+      }
+      renderPositionsTable();
+    });
+  });
+}
+if (DOM.orderStatusFilterGroup) {
+  DOM.orderStatusFilterGroup.querySelectorAll('[data-order-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.orderFilter = btn.getAttribute('data-order-filter') || 'all';
+      renderOrdersTable();
+    });
+  });
+}
+
+DOM.refreshPositionsBtn.addEventListener('click', () => {
+  loadPositions(true, true);
+  if (state.positionFilter === 'per_trade') {
+    loadOrders(true, true);
+  }
+});
 if (DOM.refreshHoldingsBtn) {
   DOM.refreshHoldingsBtn.addEventListener('click', () => loadHoldings(true, true));
 }

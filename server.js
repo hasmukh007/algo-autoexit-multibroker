@@ -21,10 +21,11 @@ const multiBrokerManager = new MultiBrokerManager(configManager);
 
 // Instantiate 9:00 AM Opening Balance Scheduler
 const openingBalanceScheduler = new OpeningBalanceScheduler(multiBrokerManager);
+multiBrokerManager.setOpeningBalanceProvider(() => openingBalanceScheduler.getOpeningBalanceData());
 
 // Instantiate Algo Auto-Exit Engine
 const autoExitEngine = new AutoExitEngine(multiBrokerManager, openingBalanceScheduler, configManager);
-multiBrokerManager.setDailyRiskGuardProvider(() => autoExitEngine.getDailyRiskGuardStatus());
+multiBrokerManager.setDailyRiskGuardProvider(accountId => autoExitEngine.getDailyRiskGuardStatus(accountId));
 autoExitEngine.start();
 
 // Instantiate 9:00 AM NIFTY Spot & 10 ITM + ATM + 10 OTM Option Chain Feed Manager
@@ -43,6 +44,57 @@ const autoLoginScheduler = new AutoLoginScheduler(multiBrokerManager);
 
 // Active SSE client connections
 const sseClients = new Set();
+
+// Pending auto-order confirmations (ask confirmation + play bell on page before sending to broker)
+const pendingConfirmOrders = new Map();
+const dismissedConfirmKeys = new Set();
+
+autoExitEngine.setOrderExecutorGate(async ({ dedupeKey, summary, executeFn }) => {
+  if (dismissedConfirmKeys.has(dedupeKey)) {
+    return { skipped: true, reason: 'User rejected this confirmation' };
+  }
+  for (const existing of pendingConfirmOrders.values()) {
+    if (existing.dedupeKey === dedupeKey) {
+      return { queued: true, pendingId: existing.id };
+    }
+  }
+  const id = `PCONF-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+  const entry = {
+    id,
+    dedupeKey,
+    summary,
+    status: 'PENDING',
+    createdAt: new Date().toISOString(),
+    executeFn
+  };
+  pendingConfirmOrders.set(id, entry);
+  autoExitEngine.log('ALERT', `🔔 Confirmation required on page before sending ${(summary && summary.symbol) || 'order'} (${(summary && summary.reason) || 'Algo Trigger'})`);
+  broadcastSSE('order_confirmation_required', {
+    id: entry.id,
+    summary: entry.summary,
+    status: entry.status,
+    createdAt: entry.createdAt
+  });
+  return { queued: true, pendingId: id };
+});
+
+autoExitEngine.on('cancel_pending_confirmations', ({ key, accountId, symbol }) => {
+  const keyPrefix = key ? `${key}:` : '';
+  for (const [id, entry] of pendingConfirmOrders.entries()) {
+    const matchesKey = keyPrefix && String(entry.dedupeKey || '').startsWith(keyPrefix);
+    const matchesSym = symbol && entry.summary && entry.summary.symbol === symbol &&
+      (!accountId || !entry.dedupeKey || String(entry.dedupeKey).startsWith(`${accountId}_`));
+    if (matchesKey || matchesSym) {
+      pendingConfirmOrders.delete(id);
+      if (entry.dedupeKey) dismissedConfirmKeys.delete(entry.dedupeKey);
+      broadcastSSE('order_confirmation_resolved', {
+        id,
+        status: 'CANCELLED',
+        reason: '150% Target Reached - Pending Orders Cancelled'
+      });
+    }
+  }
+});
 
 function broadcastSSE(event, data) {
   const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -92,6 +144,7 @@ niftyFeedManager.on('tick', snapshot => {
   if (snapshot && snapshot.spot && snapshot.spot.ltp > 0 && snapshot.feedState && snapshot.feedState.sourceMode === 'live_broker') {
     niftyCandleManager.onSpotTick(snapshot.spot.ltp, snapshot.timestamp || Date.now());
   }
+  multiBrokerManager.syncPaperPositions(snapshot);
   if (sseClients.size > 0) {
     broadcastSSE('nifty_tick', snapshot);
   }
@@ -183,27 +236,14 @@ setInterval(async () => {
     let totalCharges = 0;
     let totalNetPnl = 0;
 
-    const enrichedPositions = (rawPositions || []).map(pos => {
-      const brokerPref = multiBrokerManager.getAccountBrokerage(pos.accountId, pos.broker);
-      const executedOrderCount = multiBrokerManager.getExecutedOrderCount(pos.accountId, pos.symbol);
-      const chargeInfo = ChargesCalculator.calculatePositionCharges({ ...pos, executedOrderCount }, brokerPref);
-      totalGrossPnl += chargeInfo.grossPnl;
-      totalCharges += chargeInfo.totalCharges;
-      totalNetPnl += chargeInfo.netPnl;
-
-      const netProfitPctOfCapital = openingBalance > 0
-        ? Number(((chargeInfo.netPnl / openingBalance) * 100).toFixed(2))
-        : 0;
-
-      return {
-        ...pos,
-        chargeDetails: chargeInfo,
-        grossPnl: chargeInfo.grossPnl,
-        totalCharges: chargeInfo.totalCharges,
-        netPnl: chargeInfo.netPnl,
-        netProfitPctOfCapital
-      };
-    });
+    const cfgNow = configManager.loadConfig();
+    const chargeSettings = cfgNow.chargeSettings || {};
+    const enrichedPositions = multiBrokerManager.enrichPositionsWithCharges(rawPositions, openingBalance, chargeSettings);
+    for (const pos of enrichedPositions) {
+      totalGrossPnl += Number(pos.grossPnl || 0);
+      totalCharges += Number(pos.totalCharges || 0);
+      totalNetPnl += Number(pos.netPnl || 0);
+    }
 
     const funds = await multiBrokerManager.getAllFunds();
     const overallNetProfitPct = openingBalance > 0
@@ -226,7 +266,9 @@ setInterval(async () => {
       positions: enrichedPositions,
       accounts: multiBrokerManager.getAccounts(),
       rules: autoExitEngine.getAllPositionRules(),
-      riskSettings: configManager.loadConfig().riskSettings,
+      targetStates: autoExitEngine.getAllTargetStates(),
+      riskSettings: cfgNow.riskSettings,
+      chargeSettings,
       dailyOrders: multiBrokerManager.getDailyOrderStats(),
       portfolioSchedule: multiBrokerManager.getPortfolioSchedule()
     };
@@ -359,8 +401,8 @@ const server = http.createServer(async (req, res) => {
 
       if (pathname === '/api/accounts' && method === 'POST') {
         const body = await parseBody(req);
-        if (!body.broker || !['kotakneo', 'angelone', 'dhan', 'sahi'].includes(body.broker)) {
-          return sendJson(res, 400, { success: false, message: 'Valid broker (kotakneo, angelone, dhan, sahi) is required' });
+        if (!body.broker || !['kotakneo', 'angelone', 'dhan', 'sahi', 'paper'].includes(body.broker)) {
+          return sendJson(res, 400, { success: false, message: 'Valid broker (kotakneo, angelone, dhan, sahi, paper) is required' });
         }
         const created = multiBrokerManager.addAccount(body);
         autoExitEngine.log('INFO', `Added broker account: ${created.name} (${created.broker})`);
@@ -402,8 +444,15 @@ const server = http.createServer(async (req, res) => {
 
       if (pathname === '/api/accounts/test-credentials' && method === 'POST') {
         const body = await parseBody(req);
-        if (!body.broker || !['kotakneo', 'angelone', 'dhan', 'sahi'].includes(body.broker)) {
-          return sendJson(res, 400, { success: false, message: 'Valid broker (kotakneo, angelone, dhan, sahi) is required' });
+        if (!body.broker || !['kotakneo', 'angelone', 'dhan', 'sahi', 'paper'].includes(body.broker)) {
+          return sendJson(res, 400, { success: false, message: 'Valid broker (kotakneo, angelone, dhan, sahi, paper) is required' });
+        }
+        if (body.broker === 'paper') {
+          const bal = Math.max(1000, Number(body.initialBalance || 500000));
+          return sendJson(res, 200, {
+            success: true,
+            message: `Paper Trading Options account ready with ₹${bal.toLocaleString('en-IN')} virtual capital`
+          });
         }
         const KotakNeoBroker = require('./lib/brokers/kotakNeoBroker');
         const AngelOneBroker = require('./lib/brokers/angelOneBroker');
@@ -456,6 +505,42 @@ const server = http.createServer(async (req, res) => {
           feedSubscribed: Boolean(result.success),
           niftyFeed: feedSnapshot
         });
+      }
+
+      if (pathname.startsWith('/api/accounts/') && pathname.endsWith('/risk-settings') && method === 'POST') {
+        const id = pathname.replace('/api/accounts/', '').replace('/risk-settings', '');
+        const body = await parseBody(req);
+        const patch = {};
+        if (body.targetNetProfitPct !== undefined && body.targetNetProfitPct !== '') {
+          patch.targetNetProfitPct = Math.max(0, Number(body.targetNetProfitPct));
+        }
+        if (body.stopLossNetPct !== undefined && body.stopLossNetPct !== '') {
+          patch.stopLossNetPct = Math.max(0, Number(body.stopLossNetPct));
+        }
+        if (body.nearThresholdBufferPct !== undefined && body.nearThresholdBufferPct !== '') {
+          patch.nearThresholdBufferPct = Math.max(50, Math.min(100, Number(body.nearThresholdBufferPct)));
+        }
+        const updated = multiBrokerManager.updateAccount(id, patch);
+        autoExitEngine.clearAccountBreaker(id);
+        const accRisk = multiBrokerManager.getAccountRiskSettings(id);
+        autoExitEngine.log(
+          'INFO',
+          `Updated per-account risk for ${updated.name}: Target +${accRisk.targetNetProfitPct}% (after charges), SL -${accRisk.stopLossNetPct}%, Near ${accRisk.nearThresholdBufferPct}%`
+        );
+        return sendJson(res, 200, {
+          success: true,
+          accountRisk: accRisk,
+          accounts: multiBrokerManager.getAccounts()
+        });
+      }
+
+      if (pathname.startsWith('/api/accounts/') && pathname.endsWith('/paper-reset') && method === 'POST') {
+        const id = pathname.replace('/api/accounts/', '').replace('/paper-reset', '');
+        const body = await parseBody(req);
+        const result = multiBrokerManager.resetPaperAccount(id, body.initialBalance !== undefined ? Number(body.initialBalance) : null);
+        autoExitEngine.clearAccountBreaker(id);
+        autoExitEngine.log('INFO', `Reset Paper Trading account ${id} balance to ₹${result.funds.availableCash.toLocaleString('en-IN')}`);
+        return sendJson(res, 200, { success: true, ...result });
       }
 
       if (pathname.startsWith('/api/accounts/') && method === 'PUT') {
@@ -541,25 +626,13 @@ const server = http.createServer(async (req, res) => {
         const fetched = await multiBrokerManager.fetchAllPortfolioManual();
         const openBalData = openingBalanceScheduler.getOpeningBalanceData();
         const openingBalance = Number(openBalData.openingBalance || 500000);
-        const enrichedPositions = (fetched.positions || []).map(pos => {
-          const brokerPref = multiBrokerManager.getAccountBrokerage(pos.accountId, pos.broker);
-          const executedOrderCount = multiBrokerManager.getExecutedOrderCount(pos.accountId, pos.symbol);
-          const chargeInfo = ChargesCalculator.calculatePositionCharges({ ...pos, executedOrderCount }, brokerPref);
-          const netProfitPctOfCapital = openingBalance > 0
-            ? Number(((chargeInfo.netPnl / openingBalance) * 100).toFixed(2))
-            : 0;
-          return {
-            ...pos,
-            chargeDetails: chargeInfo,
-            grossPnl: chargeInfo.grossPnl,
-            totalCharges: chargeInfo.totalCharges,
-            netPnl: chargeInfo.netPnl,
-            netProfitPctOfCapital
-          };
-        });
+        const cfgNow = configManager.loadConfig();
+        const chargeSettings = cfgNow.chargeSettings || {};
+        const enrichedPositions = multiBrokerManager.enrichPositionsWithCharges(fetched.positions || [], openingBalance, chargeSettings);
+        const enrichedOrders = multiBrokerManager.enrichOrdersWithCharges(fetched.orders || [], chargeSettings);
         autoExitEngine.log(
           'INFO',
-          `Manual portfolio fetch: ${enrichedPositions.length} positions, ${(fetched.holdings || []).length} holdings, ${(fetched.orders || []).length} orders, Cash ₹${Number((fetched.funds && fetched.funds.availableCash) || 0).toLocaleString('en-IN')}`
+          `Manual portfolio fetch: ${enrichedPositions.length} positions, ${(fetched.holdings || []).length} holdings, ${enrichedOrders.length} orders, Cash ₹${Number((fetched.funds && fetched.funds.availableCash) || 0).toLocaleString('en-IN')}`
         );
         return sendJson(res, 200, {
           success: true,
@@ -568,7 +641,7 @@ const server = http.createServer(async (req, res) => {
           funds: fetched.funds,
           positions: enrichedPositions,
           holdings: fetched.holdings || [],
-          orders: fetched.orders || []
+          orders: enrichedOrders
         });
       }
 
@@ -578,27 +651,16 @@ const server = http.createServer(async (req, res) => {
       if (pathname === '/api/positions' && method === 'GET') {
         const force = parsedUrl.searchParams.get('force') === '1';
         const manual = parsedUrl.searchParams.get('manual') === '1';
-        const rawPositions = await multiBrokerManager.getAllPositions({ force, manual });
+        const [rawPositions] = await Promise.all([
+          multiBrokerManager.getAllPositions({ force, manual }),
+          (force || manual) ? multiBrokerManager.getAllOrders({ force, manual }) : Promise.resolve([])
+        ]);
         const openBalData = openingBalanceScheduler.getOpeningBalanceData();
         const openingBalance = Number(openBalData.openingBalance || 500000);
+        const cfgNow = configManager.loadConfig();
+        const chargeSettings = cfgNow.chargeSettings || {};
 
-        const enrichedPositions = (rawPositions || []).map(pos => {
-          const brokerPref = multiBrokerManager.getAccountBrokerage(pos.accountId, pos.broker);
-          const executedOrderCount = multiBrokerManager.getExecutedOrderCount(pos.accountId, pos.symbol);
-          const chargeInfo = ChargesCalculator.calculatePositionCharges({ ...pos, executedOrderCount }, brokerPref);
-          const netProfitPctOfCapital = openingBalance > 0
-            ? Number(((chargeInfo.netPnl / openingBalance) * 100).toFixed(2))
-            : 0;
-
-          return {
-            ...pos,
-            chargeDetails: chargeInfo,
-            grossPnl: chargeInfo.grossPnl,
-            totalCharges: chargeInfo.totalCharges,
-            netPnl: chargeInfo.netPnl,
-            netProfitPctOfCapital
-          };
-        });
+        const enrichedPositions = multiBrokerManager.enrichPositionsWithCharges(rawPositions, openingBalance, chargeSettings);
 
         return sendJson(res, 200, { success: true, data: enrichedPositions });
       }
@@ -617,7 +679,9 @@ const server = http.createServer(async (req, res) => {
         const force = parsedUrl.searchParams.get('force') === '1';
         const manual = parsedUrl.searchParams.get('manual') === '1';
         const orders = await multiBrokerManager.getAllOrders({ force, manual });
-        return sendJson(res, 200, { success: true, data: orders });
+        const cfgNow = configManager.loadConfig();
+        const enrichedOrders = multiBrokerManager.enrichOrdersWithCharges(orders, cfgNow.chargeSettings || {});
+        return sendJson(res, 200, { success: true, data: enrichedOrders });
       }
 
       if (pathname === '/api/orders' && method === 'POST') {
@@ -702,6 +766,47 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { success: true, message: 'Rule removed' });
       }
 
+      if (pathname === '/api/pending-orders' && method === 'GET') {
+        const list = Array.from(pendingConfirmOrders.values()).map(p => ({
+          id: p.id,
+          summary: p.summary,
+          status: p.status,
+          createdAt: p.createdAt
+        }));
+        return sendJson(res, 200, { success: true, data: list });
+      }
+
+      if (pathname.startsWith('/api/pending-orders/') && pathname.endsWith('/confirm') && method === 'POST') {
+        const id = decodeURIComponent(pathname.replace('/api/pending-orders/', '').replace('/confirm', ''));
+        const entry = pendingConfirmOrders.get(id);
+        if (!entry) {
+          return sendJson(res, 404, { success: false, message: 'Pending order confirmation not found or already resolved' });
+        }
+        pendingConfirmOrders.delete(id);
+        dismissedConfirmKeys.delete(entry.dedupeKey);
+        try {
+          const result = await entry.executeFn();
+          broadcastSSE('order_confirmation_resolved', { id, status: 'CONFIRMED' });
+          return sendJson(res, 200, { success: true, id, status: 'CONFIRMED', result });
+        } catch (execErr) {
+          broadcastSSE('order_confirmation_resolved', { id, status: 'ERROR', error: execErr.message });
+          return sendJson(res, 400, { success: false, id, message: execErr.message });
+        }
+      }
+
+      if (pathname.startsWith('/api/pending-orders/') && pathname.endsWith('/reject') && method === 'POST') {
+        const id = decodeURIComponent(pathname.replace('/api/pending-orders/', '').replace('/reject', ''));
+        const entry = pendingConfirmOrders.get(id);
+        if (!entry) {
+          return sendJson(res, 404, { success: false, message: 'Pending order confirmation not found' });
+        }
+        pendingConfirmOrders.delete(id);
+        dismissedConfirmKeys.add(entry.dedupeKey);
+        autoExitEngine.log('INFO', `Rejected/cancelled pending order for ${(entry.summary && entry.summary.symbol) || id}`);
+        broadcastSSE('order_confirmation_resolved', { id, status: 'REJECTED' });
+        return sendJson(res, 200, { success: true, id, status: 'REJECTED' });
+      }
+
       if (pathname === '/api/autoexit/exit-position' && method === 'POST') {
         const body = await parseBody(req);
         const positions = await multiBrokerManager.getAllPositions();
@@ -709,13 +814,13 @@ const server = http.createServer(async (req, res) => {
         if (!pos) {
           return sendJson(res, 404, { success: false, message: 'Position not found' });
         }
-        const result = await autoExitEngine.exitPosition(pos, body.reason || 'Manual Web Exit');
+        const result = await autoExitEngine.exitPosition(pos, body.reason || 'Manual Web Exit', { skipGate: Boolean(body.userConfirmed) });
         return sendJson(res, 200, { success: true, data: result });
       }
 
       if (pathname === '/api/autoexit/exit-all' && method === 'POST') {
         const body = await parseBody(req);
-        const result = await autoExitEngine.exitAllPositions(body.reason || 'Panic Exit All Across Brokers');
+        const result = await autoExitEngine.exitAllPositions(body.reason || 'Panic Exit All Across Brokers', { skipGate: Boolean(body.userConfirmed) });
         return sendJson(res, 200, { success: true, data: result });
       }
 
@@ -811,6 +916,7 @@ const server = http.createServer(async (req, res) => {
           openingBalance: openBal,
           accounts: multiBrokerManager.getAccounts(),
           riskSettings: currentConfig.riskSettings,
+          chargeSettings: currentConfig.chargeSettings,
           dailyOrders: multiBrokerManager.getDailyOrderStats(),
           portfolioSchedule: multiBrokerManager.getPortfolioSchedule(),
           autoExitRunning: autoExitEngine.isRunning
@@ -851,6 +957,31 @@ const server = http.createServer(async (req, res) => {
           riskSettings: rs,
           dailyOrders: multiBrokerManager.getDailyOrderStats()
         });
+      }
+
+      if (pathname === '/api/charge-settings' && method === 'GET') {
+        currentConfig = configManager.loadConfig();
+        return sendJson(res, 200, { success: true, chargeSettings: currentConfig.chargeSettings });
+      }
+
+      if (pathname === '/api/charge-settings' && method === 'POST') {
+        const body = await parseBody(req);
+        const defs = ChargesCalculator.getDefaultChargeSettings();
+        const sanitized = {
+          sttPct: body.sttPct !== undefined ? Math.max(0, Number(body.sttPct)) : defs.sttPct,
+          exchangeTxnPct: body.exchangeTxnPct !== undefined ? Math.max(0, Number(body.exchangeTxnPct)) : defs.exchangeTxnPct,
+          sebiPerCrore: body.sebiPerCrore !== undefined ? Math.max(0, Number(body.sebiPerCrore)) : defs.sebiPerCrore,
+          ipftPerCrore: body.ipftPerCrore !== undefined ? Math.max(0, Number(body.ipftPerCrore)) : defs.ipftPerCrore,
+          stampDutyBuyPct: body.stampDutyBuyPct !== undefined ? Math.max(0, Number(body.stampDutyBuyPct)) : defs.stampDutyBuyPct,
+          gstPct: body.gstPct !== undefined ? Math.max(0, Number(body.gstPct)) : defs.gstPct
+        };
+        currentConfig = configManager.saveConfig({ chargeSettings: sanitized });
+        const cs = currentConfig.chargeSettings;
+        autoExitEngine.log(
+          'INFO',
+          `Updated Options statutory charges: STT ${cs.sttPct}%, Exch Txn ${cs.exchangeTxnPct}%, SEBI ₹${cs.sebiPerCrore}/Cr, IPFT ₹${cs.ipftPerCrore}/Cr, Stamp Duty (Buy) ${cs.stampDutyBuyPct}%, GST ${cs.gstPct}%`
+        );
+        return sendJson(res, 200, { success: true, chargeSettings: cs });
       }
 
       return sendJson(res, 404, { success: false, message: 'Endpoint not found' });

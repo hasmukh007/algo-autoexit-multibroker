@@ -492,6 +492,9 @@ async function loadAccounts() {
 
 function initEventSource() {
   const es = new EventSource('/api/stream');
+  if (typeof window.attachOrderConfirmationStream === 'function') {
+    window.attachOrderConfirmationStream(es);
+  }
 
   es.addEventListener('connected', () => {
     OC_DOM.connLabel.textContent = 'Live SSE Active';
@@ -790,8 +793,23 @@ OC_DOM.ocOrderForm.addEventListener('submit', async e => {
     freezeQty: ocModalSpec.freezeQty,
     price: ot === 'MKT' ? 0 : Number(OC_DOM.ocOrdPrice.value || 0),
     triggerPrice: ot === 'SL' && OC_DOM.ocOrdTriggerPrice ? Number(OC_DOM.ocOrdTriggerPrice.value || 0) : 0,
-    ltp: ocModalSpec.ltp
+    ltp: ocModalSpec.ltp,
+    userConfirmed: true
   };
+
+  const ocSelOpt = OC_DOM.ocOrdBroker && OC_DOM.ocOrdBroker.options[OC_DOM.ocOrdBroker.selectedIndex];
+  const brokerLabel = routingMode === 'all_funded'
+    ? 'All Funded Brokers'
+    : ((ocSelOpt && ocSelOpt.textContent) || payload.accountId);
+
+  if (typeof window.confirmOrderBeforeSend === 'function') {
+    const confirmed = await window.confirmOrderBeforeSend({
+      ...payload,
+      brokerLabel,
+      sourceLabel: 'Option Chain Order Confirmation'
+    });
+    if (!confirmed) return;
+  }
 
   OC_DOM.submitOcOrderBtn.disabled = true;
   try {

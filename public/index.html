@@ -106,6 +106,10 @@
         </button>
         <span class="badge" id="portfolioFetchStatusBadge" title="Portfolio Auto-Fetch Schedule (9:00 AM - 4:00 PM IST)">Checking schedule...</span>
 
+        <button class="btn-outline btn-sm" id="openChargeSettingsBtn" title="Configure statutory charges (STT, Transaction, SEBI, IPFT, Stamp Duty, GST)">
+          Charges
+        </button>
+
         <!-- Multi-Broker Accounts Pill -->
         <button class="btn-broker-accounts" id="openAccountsBtn" title="Manage Angel One, Dhan, Kotak Neo Accounts">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -169,6 +173,14 @@
       <!-- Quick Order, Capital %, Max Orders & Net Profit % Controls Bar on Top -->
       <div class="banner-right">
         <div class="auto-exit-quick-controls">
+          <div class="quick-ctrl-group">
+            <label for="quickRiskAccountSelect">Account (SL &amp; Target):</label>
+            <select id="quickRiskAccountSelect" style="min-width:155px;">
+              <option value="">Loading accounts...</option>
+            </select>
+            <span class="hint-calc" id="quickAccRiskHint">Per-account SL &amp; Target</span>
+          </div>
+
           <div class="quick-ctrl-group">
             <label for="quickCapitalDeployPct">Deploy Capital / Day (%):</label>
             <div class="input-with-addon">
@@ -356,7 +368,13 @@
             <h2>Live Multi-Broker Positions & Net Profit %</h2>
             <p>Positions automatically appear here when an order executes on Angel One, Dhan, or Kotak Neo. Charges & Net Profit are recalculated continuously.</p>
           </div>
-          <div class="panel-header-actions">
+          <div class="panel-header-actions" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <div class="btn-group" id="positionFilterGroup" style="display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap;">
+              <button type="button" class="btn-xs btn-primary pos-filter-btn active" data-pos-filter="all">All Net</button>
+              <button type="button" class="btn-xs btn-outline pos-filter-btn" data-pos-filter="open">Open</button>
+              <button type="button" class="btn-xs btn-outline pos-filter-btn" data-pos-filter="closed">Closed</button>
+              <button type="button" class="btn-xs btn-outline pos-filter-btn" data-pos-filter="per_trade">Per Trade</button>
+            </div>
             <button class="btn-sm btn-outline" id="refreshPositionsBtn">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M23 4v6h-6"></path>
@@ -368,7 +386,7 @@
           </div>
         </div>
 
-        <div class="table-container">
+        <div class="table-container" id="netPositionsTableContainer">
           <table class="data-table" id="positionsTable">
             <thead>
               <tr>
@@ -389,6 +407,32 @@
             <tbody id="positionsTableBody">
               <tr>
                 <td colspan="12" class="empty-state">Loading positions across brokers...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="table-container" id="perTradeTableContainer" style="display: none;">
+          <table class="data-table" id="perTradeTable">
+            <thead>
+              <tr>
+                <th>Broker</th>
+                <th>Order ID</th>
+                <th>Time</th>
+                <th>Symbol</th>
+                <th>Product</th>
+                <th>Side</th>
+                <th class="text-right">Qty</th>
+                <th class="text-right">Exec Price</th>
+                <th class="text-right">Turnover</th>
+                <th class="text-right">Brokerage</th>
+                <th class="text-right">Other Charges</th>
+                <th class="text-right">Total Charges</th>
+              </tr>
+            </thead>
+            <tbody id="perTradeTableBody">
+              <tr>
+                <td colspan="12" class="empty-state">No executed trades loaded.</td>
               </tr>
             </tbody>
           </table>
@@ -499,19 +543,15 @@
                   <div class="quick-chips">
                     <span class="chip chip-atm" data-atm-opt="CE">ATM CE</span>
                     <span class="chip chip-atm" data-atm-opt="PE">ATM PE</span>
-                    <span class="chip" data-symbol="RELIANCE-EQ" data-segment="nse_cm">RELIANCE</span>
-                    <span class="chip" data-symbol="HDFCBANK-EQ" data-segment="nse_cm">HDFCBANK</span>
                   </div>
                   <span class="input-hint mono" id="orderLtpHint" style="display:block; margin-top:4px;">Live LTP: --</span>
                 </div>
 
                 <div class="form-group">
-                  <label for="orderSegment">Exchange Segment</label>
+                  <label for="orderSegment">Exchange Segment (Options Only)</label>
                   <select id="orderSegment">
-                    <option value="nse_fo" selected>NSE Derivatives F&O (nse_fo)</option>
-                    <option value="nse_cm">NSE Equity (nse_cm)</option>
-                    <option value="bse_fo">BSE Derivatives (bse_fo)</option>
-                    <option value="bse_cm">BSE Equity (bse_cm)</option>
+                    <option value="nse_fo" selected>NSE Options (nse_fo)</option>
+                    <option value="bse_fo">BSE Options (bse_fo)</option>
                   </select>
                 </div>
               </div>
@@ -521,9 +561,8 @@
                 <div class="form-group">
                   <label for="orderProduct">Product</label>
                   <select id="orderProduct">
-                    <option value="MIS" selected>MIS (Intraday)</option>
-                    <option value="CNC">CNC (Delivery)</option>
-                    <option value="NRML">NRML (Normal Margin)</option>
+                    <option value="MIS" selected>MIS (Intraday Options)</option>
+                    <option value="NRML">NRML (Normal Margin Options)</option>
                   </select>
                 </div>
 
@@ -593,7 +632,14 @@
             <h2>Multi-Broker Order History</h2>
             <p>All executed, pending, and cancelled orders from Angel One, Dhan, and Kotak Neo.</p>
           </div>
-          <div class="panel-header-actions">
+          <div class="panel-header-actions" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <div class="btn-group" id="orderStatusFilterGroup" style="display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap;">
+              <button type="button" class="btn-xs btn-primary order-filter-btn active" data-order-filter="all">All</button>
+              <button type="button" class="btn-xs btn-outline order-filter-btn" data-order-filter="completed">Completed</button>
+              <button type="button" class="btn-xs btn-outline order-filter-btn" data-order-filter="open">Open</button>
+              <button type="button" class="btn-xs btn-outline order-filter-btn" data-order-filter="rejected">Rejected</button>
+              <button type="button" class="btn-xs btn-outline order-filter-btn" data-order-filter="cancelled">Cancelled</button>
+            </div>
             <button class="btn-sm btn-outline" id="refreshOrdersBtn">Refresh</button>
           </div>
         </div>
@@ -629,7 +675,8 @@
             <h2>Connected Broker Accounts</h2>
             <p>Configure multiple broker accounts (Kotak Neo, Angel One SmartAPI, DhanHQ). When any order executes on any broker, the position immediately appears on the page.</p>
           </div>
-          <div class="panel-header-actions">
+          <div class="panel-header-actions" style="display:flex; gap:8px;">
+            <button class="btn-outline btn-sm" id="addPaperAccountBtn">+ Add Paper Account</button>
             <button class="btn-primary btn-sm" id="addNewAccountBtn">+ Add Broker Account</button>
           </div>
         </div>
@@ -641,7 +688,8 @@
                 <th>Broker</th>
                 <th>Account Name</th>
                 <th>Client Code / UCC</th>
-                <th>Brokerage</th>
+                <th>Brokerage (Options)</th>
+                <th>Target / SL (%)</th>
                 <th>Status</th>
                 <th>Available Balance</th>
                 <th>Action</th>
@@ -649,7 +697,7 @@
             </thead>
             <tbody id="accountsTableBody">
               <tr>
-                <td colspan="7" class="empty-state">Loading accounts...</td>
+                <td colspan="8" class="empty-state">Loading accounts...</td>
               </tr>
             </tbody>
           </table>
@@ -720,6 +768,7 @@
                 <option value="angelone">Angel One (SmartAPI)</option>
                 <option value="dhan">Dhan (DhanHQ)</option>
                 <option value="sahi">Sahi Direct API (Sahi)</option>
+                <option value="paper">Paper Trading (Virtual Options Account)</option>
               </select>
             </div>
 
@@ -820,39 +869,51 @@
             </div>
           </div>
 
-          <div class="broker-fields" id="brokerageConfigSection">
-            <h4>Brokerage Settings (per executed order)</h4>
+          <div id="paperFields" class="broker-fields" style="display: none;">
+            <h4>Paper Trading Account (Virtual Options Capital)</h4>
             <div class="form-row two-col">
               <div class="form-group">
-                <label for="accBrokerageType">Brokerage Plan</label>
+                <label for="paperInitialBalance">Starting Paper Capital (₹)</label>
+                <input type="number" id="paperInitialBalance" step="1000" min="1000" value="500000" placeholder="500000">
+                <span class="input-hint">Trades NIFTY Options using live market LTPs without real money</span>
+              </div>
+              <div class="form-group">
+                <label>Mode</label>
+                <div class="input-hint mono" style="padding: 9px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">Always Active (Even in LIVE mode)</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="broker-fields" id="brokerageConfigSection">
+            <h4>Options Brokerage &amp; Per-Account Target / SL</h4>
+            <div class="form-row two-col">
+              <div class="form-group">
+                <label for="accBrokerageType">Options Brokerage Plan</label>
                 <select id="accBrokerageType">
-                  <option value="zero">Zero Brokerage (₹0 / order — Kotak Trade Free / Youth)</option>
+                  <option value="zero">Zero Brokerage (₹0 / order)</option>
                   <option value="flat" selected>Flat Brokerage per Order (₹20 or custom)</option>
-                  <option value="custom">Custom Segment-wise Rates</option>
                 </select>
               </div>
               <div class="form-group">
-                <label for="accBrokeragePerOrder">Brokerage per Order (₹)</label>
+                <label for="accBrokeragePerOrder">Options Brokerage per Order (₹)</label>
                 <input type="number" id="accBrokeragePerOrder" step="1" min="0" value="20" placeholder="e.g. 20 or 0">
-                <span class="input-hint">Applied per executed order (2 orders for entry + exit)</span>
+                <span class="input-hint">Applied per executed option order (entry + exit)</span>
               </div>
             </div>
-            <div id="customBrokerageFields" class="form-row two-col" style="display: none; margin-top: 8px;">
+            <div class="form-row three-col" style="margin-top: 10px;">
               <div class="form-group">
-                <label for="accOptionsBrokerage">Options (₹/order)</label>
-                <input type="number" id="accOptionsBrokerage" step="1" min="0" placeholder="e.g. 20 or 0">
+                <label for="accTargetNetPct">Net Profit Target (%)</label>
+                <input type="number" id="accTargetNetPct" step="0.1" min="0" value="1.5" placeholder="1.5">
+                <span class="input-hint">After charges &amp; brokerage</span>
               </div>
               <div class="form-group">
-                <label for="accFuturesBrokerage">Futures (₹/order)</label>
-                <input type="number" id="accFuturesBrokerage" step="1" min="0" placeholder="e.g. 20 or 0">
+                <label for="accStopLossNetPct">Account Stop Loss (%)</label>
+                <input type="number" id="accStopLossNetPct" step="0.1" min="0" value="1.0" placeholder="1.0">
+                <span class="input-hint">Max loss % for this account</span>
               </div>
               <div class="form-group">
-                <label for="accIntradayBrokerage">Equity Intraday (₹/order cap)</label>
-                <input type="number" id="accIntradayBrokerage" step="1" min="0" placeholder="e.g. 20 or 0">
-              </div>
-              <div class="form-group">
-                <label for="accDeliveryBrokerage">Equity Delivery (₹/order)</label>
-                <input type="number" id="accDeliveryBrokerage" step="1" min="0" placeholder="e.g. 0 or 20">
+                <label for="accNearBufferPct">Near Target Trigger (%)</label>
+                <input type="number" id="accNearBufferPct" step="1" min="50" max="100" value="98" placeholder="98">
               </div>
             </div>
           </div>
@@ -936,9 +997,70 @@
     </div>
   </div>
 
+  <!-- MODAL: STATUTORY CHARGES SETTINGS (OPTIONS) -->
+  <div class="modal-backdrop" id="chargeSettingsModal">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <h3>Options Statutory Charges Settings</h3>
+        <button class="btn-close" id="closeChargeSettingsModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="section-desc" style="margin-bottom: 14px;">
+          Applies across all Options trades. Per-broker <strong>Brokerage (₹/order)</strong> is configured inside each Broker Account.
+        </p>
+        <form id="chargeSettingsForm">
+          <div class="form-row two-col">
+            <div class="form-group">
+              <label for="chgSttPct">STT (% on Sell Turnover)</label>
+              <input type="number" id="chgSttPct" step="0.0001" min="0" value="0.15" required>
+              <span class="input-hint">Default: 0.15% on Sell turnover only</span>
+            </div>
+            <div class="form-group">
+              <label for="chgExchTxnPct">Transaction Charges (% on Total Turnover)</label>
+              <input type="number" id="chgExchTxnPct" step="0.00001" min="0" value="0.03553" required>
+              <span class="input-hint">Default: 0.03553% on Total turnover</span>
+            </div>
+          </div>
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <label for="chgSebiPerCrore">SEBI Charges (₹ / Crore on Total Turnover)</label>
+              <input type="number" id="chgSebiPerCrore" step="0.01" min="0" value="10" required>
+              <span class="input-hint">Default: ₹10 per ₹1 Crore turnover</span>
+            </div>
+            <div class="form-group">
+              <label for="chgIpftPerCrore">IPFT Charges (₹ / Crore on Total Turnover)</label>
+              <input type="number" id="chgIpftPerCrore" step="0.001" min="0" value="0.01" required>
+              <span class="input-hint">Default: ₹0.01 per ₹1 Crore turnover</span>
+            </div>
+          </div>
+
+          <div class="form-row two-col">
+            <div class="form-group">
+              <label for="chgStampDutyBuyPct">Stamp Duty (% on Buy Turnover)</label>
+              <input type="number" id="chgStampDutyBuyPct" step="0.0001" min="0" value="0.003" required>
+              <span class="input-hint">Default: 0.003% on Buy turnover per trade (ceiled to ₹)</span>
+            </div>
+            <div class="form-group">
+              <label for="chgGstPct">GST (%)</label>
+              <input type="number" id="chgGstPct" step="0.1" min="0" value="18" required>
+              <span class="input-hint">18% on (Brokerage + SEBI + Txn + IPFT)</span>
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn-outline" id="resetChargeDefaultsBtn">Reset Defaults</button>
+            <button type="submit" class="btn-primary">Save Charges</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- TOAST CONTAINER -->
   <div class="toast-container" id="toastContainer"></div>
 
+  <script src="order-confirm.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
