@@ -78,19 +78,21 @@ autoExitEngine.setOrderExecutorGate(async ({ dedupeKey, summary, executeFn }) =>
   return { queued: true, pendingId: id };
 });
 
-autoExitEngine.on('cancel_pending_confirmations', ({ key, accountId, symbol }) => {
+autoExitEngine.on('cancel_pending_confirmations', ({ key, accountId, symbol, excludePrefix, reason } = {}) => {
   const keyPrefix = key ? `${key}:` : '';
   for (const [id, entry] of pendingConfirmOrders.entries()) {
-    const matchesKey = keyPrefix && String(entry.dedupeKey || '').startsWith(keyPrefix);
+    const dedupe = String(entry.dedupeKey || '');
+    if (excludePrefix && dedupe.startsWith(excludePrefix)) continue;
+    const matchesKey = keyPrefix && dedupe.startsWith(keyPrefix);
     const matchesSym = symbol && entry.summary && entry.summary.symbol === symbol &&
-      (!accountId || !entry.dedupeKey || String(entry.dedupeKey).startsWith(`${accountId}_`));
+      (!accountId || !dedupe || dedupe.startsWith(`${accountId}_`));
     if (matchesKey || matchesSym) {
       pendingConfirmOrders.delete(id);
       if (entry.dedupeKey) dismissedConfirmKeys.delete(entry.dedupeKey);
       broadcastSSE('order_confirmation_resolved', {
         id,
         status: 'CANCELLED',
-        reason: '150% Target Reached - Pending Orders Cancelled'
+        reason: reason || 'Pending Orders Cancelled'
       });
     }
   }
@@ -515,7 +517,7 @@ const server = http.createServer(async (req, res) => {
           patch.targetNetProfitPct = Math.max(0, Number(body.targetNetProfitPct));
         }
         if (body.stopLossNetPct !== undefined && body.stopLossNetPct !== '') {
-          patch.stopLossNetPct = Math.max(0, Number(body.stopLossNetPct));
+          patch.stopLossNetPct = Number(body.stopLossNetPct);
         }
         if (body.nearThresholdBufferPct !== undefined && body.nearThresholdBufferPct !== '') {
           patch.nearThresholdBufferPct = Math.max(50, Math.min(100, Number(body.nearThresholdBufferPct)));
@@ -523,9 +525,10 @@ const server = http.createServer(async (req, res) => {
         const updated = multiBrokerManager.updateAccount(id, patch);
         autoExitEngine.clearAccountBreaker(id);
         const accRisk = multiBrokerManager.getAccountRiskSettings(id);
+        const slTxt = accRisk.stopLossNetPct > 0 ? `+${accRisk.stopLossNetPct}%` : `${accRisk.stopLossNetPct}%`;
         autoExitEngine.log(
           'INFO',
-          `Updated per-account risk for ${updated.name}: Target +${accRisk.targetNetProfitPct}% (after charges), SL -${accRisk.stopLossNetPct}%, Near ${accRisk.nearThresholdBufferPct}%`
+          `Updated per-account risk for ${updated.name}: Target +${accRisk.targetNetProfitPct}% (after charges), SL ${slTxt}, Near ${accRisk.nearThresholdBufferPct}%`
         );
         return sendJson(res, 200, {
           success: true,
@@ -948,9 +951,10 @@ const server = http.createServer(async (req, res) => {
         currentConfig = configManager.saveConfig({ riskSettings: sanitized });
         autoExitEngine.clearDailyBreaker();
         const rs = currentConfig.riskSettings;
+        const slLogTxt = rs.maxDailyLossNetPct > 0 ? `+${rs.maxDailyLossNetPct}%` : `${rs.maxDailyLossNetPct}%`;
         autoExitEngine.log(
           'INFO',
-          `Updated day order/risk settings: Deploy ${rs.capitalDeployPct}% capital, Net Target +${rs.targetDailyNetProfitPct}% (after charges), Max Loss -${rs.maxDailyLossNetPct}%, Max Orders/Day ${rs.maxDailyOrders > 0 ? rs.maxDailyOrders : 'Unlimited'}, Routing: ${rs.orderRoutingMode === 'all_funded' ? 'All Funded Brokers' : 'Selected Broker'}`
+          `Updated day order/risk settings: Deploy ${rs.capitalDeployPct}% capital, Net Target +${rs.targetDailyNetProfitPct}% (after charges), SL ${slLogTxt}, Max Orders/Day ${rs.maxDailyOrders > 0 ? rs.maxDailyOrders : 'Unlimited'}, Routing: ${rs.orderRoutingMode === 'all_funded' ? 'All Funded Brokers' : 'Selected Broker'}`
         );
         return sendJson(res, 200, {
           success: true,

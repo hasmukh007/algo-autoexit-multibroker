@@ -209,12 +209,12 @@
           </div>
 
           <div class="quick-ctrl-group">
-            <label for="quickStopLossPct">Max Loss for Day (%):</label>
+            <label for="quickStopLossPct">Stop Loss % (-ve Loss / +ve Profit):</label>
             <div class="input-with-addon">
-              <input type="number" id="quickStopLossPct" step="0.1" value="1.0" min="0.1" max="50">
+              <input type="number" id="quickStopLossPct" step="0.1" value="-1.0" min="-100" max="500">
               <span class="addon">%</span>
             </div>
-            <span class="hint-calc" id="quickStopInrHint">= -₹5,000 Net</span>
+            <span class="hint-calc" id="quickStopInrHint">= -₹5,000 Loss SL</span>
           </div>
 
           <div class="quick-ctrl-group">
@@ -908,8 +908,8 @@
               </div>
               <div class="form-group">
                 <label for="accStopLossNetPct">Account Stop Loss (%)</label>
-                <input type="number" id="accStopLossNetPct" step="0.1" min="0" value="1.0" placeholder="1.0">
-                <span class="input-hint">Max loss % for this account</span>
+                <input type="number" id="accStopLossNetPct" step="0.1" min="-100" max="500" value="-1.0" placeholder="-10 or +10">
+                <span class="input-hint">-ve = exit/SL in loss, +ve = SL order in profit</span>
               </div>
               <div class="form-group">
                 <label for="accNearBufferPct">Near Target Trigger (%)</label>
@@ -964,8 +964,8 @@
           <div class="form-row two-col">
             <div class="form-group">
               <label for="ruleStopLossNetPct">Net Stop Loss (%)</label>
-              <input type="number" id="ruleStopLossNetPct" step="0.1" placeholder="e.g. 1.0">
-              <span class="input-hint">Exit if Net Loss &ge; this %</span>
+              <input type="number" id="ruleStopLossNetPct" step="0.1" min="-100" max="500" placeholder="e.g. -10 or +10">
+              <span class="input-hint">-ve = exit/SL on loss, +ve = SL order in profit (when LTP above)</span>
             </div>
 
             <div class="form-group">

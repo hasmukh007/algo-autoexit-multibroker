@@ -250,7 +250,7 @@ async function runTests() {
   const rule = engine.setPositionRule('mock_kotak_1', 'NIFTY 24NOV 24200 CE', 'MIS', {
     targetNetProfitPct: 0.5,
     nearThresholdBufferPct: 95,
-    stopLossNetPct: 1.0,
+    stopLossNetPct: -1.0,
     enabled: true
   });
   assert.strictEqual(rule.targetNetProfitPct, 0.5);
@@ -268,8 +268,8 @@ async function runTests() {
     getAccountBrokerage() { return { brokerageType: 'zero', brokeragePerOrder: 0 }; },
     getExecutedOrderCount() { return 2; },
     getAccountRiskSettings(id) {
-      if (id === 'acc_a') return { targetNetProfitPct: 2.0, stopLossNetPct: 1.0, nearThresholdBufferPct: 100 };
-      return { targetNetProfitPct: 10.0, stopLossNetPct: 5.0, nearThresholdBufferPct: 100 };
+      if (id === 'acc_a') return { targetNetProfitPct: 2.0, stopLossNetPct: -1.0, nearThresholdBufferPct: 100 };
+      return { targetNetProfitPct: 10.0, stopLossNetPct: -5.0, nearThresholdBufferPct: 100 };
     },
     async getAllPositions() {
       return [
@@ -629,6 +629,124 @@ async function runTests() {
   await engine150._evaluatePositions();
   assert.strictEqual(placed150.length, 1, 'Must not place duplicate 125% SL order on subsequent ticks');
   console.log(`   ✅ 150% Profit Target verified: cancelled ${cancelCalls.join(', ')} & sent 125% SL @ ${ts150.target125Price} without confirmation.`);
+
+  // 10. Signed Stop Loss (-ve Loss SL w/ Charges vs +ve Profit SL when LTP > Target) & Cancel Pending SL Before Target Order
+  console.log('\n10. Testing Signed Stop Loss (-10% Loss SL, +10% Profit SL, & Cancel Pending SL Before Profit Target)...');
+  let slTestLtp = 100;
+  let slTestQty = 100;
+  const slTimeline = [];
+  let slOrdSeq = 1;
+  let openPendingSlIds = [];
+
+  const slMgr = {
+    mockManager: { updateLtpsFromRealFeed() {} },
+    getAccountBrokerage() { return { brokerageType: 'flat', brokeragePerOrder: 20 }; },
+    getExecutedOrders() {
+      return [{ orderId: 'BUY-1', accountId: 'acc_sl', symbol: 'NIFTY01DEC26C25000', transactionType: 'B', quantity: 100, filledQuantity: 100, price: 100, status: 'COMPLETE' }];
+    },
+    getPositionLotSize() { return 50; },
+    getAccountRiskSettings() { return { targetNetProfitPct: 0, stopLossNetPct: 0, nearThresholdBufferPct: 100 }; },
+    async getAllPositions() {
+      if (slTestQty <= 0) return [];
+      return [{
+        accountId: 'acc_sl',
+        broker: 'angelone',
+        symbol: 'NIFTY01DEC26C25000',
+        exchangeSegment: 'NFO',
+        product: 'MIS',
+        netQty: slTestQty,
+        buyQty: 100,
+        buyAvg: 100,
+        ltp: slTestLtp,
+        totalPnl: Number(((slTestLtp - 100) * slTestQty).toFixed(2)),
+        isOpen: true
+      }];
+    },
+    async cancelAllPendingOrdersForPosition(accId, brk, sym, extraIds = [], excludeIds = []) {
+      const ex = new Set(excludeIds);
+      const cancelledIds = Array.from(new Set([...openPendingSlIds, ...extraIds])).filter(id => !ex.has(id));
+      openPendingSlIds = openPendingSlIds.filter(id => !cancelledIds.includes(id));
+      if (cancelledIds.length > 0) slTimeline.push({ op: 'cancelPending', cancelledIds });
+      return { cancelledIds };
+    },
+    async placeOrder(ord) {
+      const id = `SLTEST-${slOrdSeq++}`;
+      openPendingSlIds.push(id);
+      slTimeline.push({ op: 'place', orderId: id, ...ord });
+      return { success: true, orderId: id, orderIds: [id] };
+    },
+    async exitPosition(pos, reason, overrideQty) {
+      const q = overrideQty || pos.netQty;
+      slTestQty -= q;
+      slTimeline.push({ op: 'exit', quantity: q, reason });
+      return { success: true, orderId: `EXITSL-${slOrdSeq++}` };
+    }
+  };
+
+  const slEngine = new AutoExitEngine(
+    slMgr,
+    { getOpeningBalanceData: () => ({ openingBalance: 10000, accounts: [{ id: 'acc_sl', availableCash: 10000, totalBalance: 10000 }] }) },
+    { loadConfig: () => ({ chargeSettings: ChargesCalculator.getDefaultChargeSettings(), riskSettings: { autoExitEnabled: true } }) }
+  );
+  slEngine.allowQuietHoursEval = true;
+
+  // Case 10A: Opening balance ₹10,000, Bought 100 @ ₹100, SL = -10% -> must place SL-LMT @ ~90.70 trig / ~90.20 limit (charge-adjusted -₹1000 Net)
+  slEngine.setPositionRule('acc_sl', 'NIFTY01DEC26C25000', 'MIS', {
+    stopLossNetPct: -10,
+    targetNetProfitPct: 30, // Target +30% (+₹3000 -> 50% at ~115.4)
+    nearThresholdBufferPct: 100,
+    enabled: true
+  });
+  await slEngine._evaluatePositions();
+  const negSlPlace = slTimeline.find(e => e.op === 'place');
+  assert(negSlPlace, 'Negative -10% SL must send SL-LMT order when LTP > trigger');
+  assert(negSlPlace.triggerPrice > 90 && negSlPlace.triggerPrice < 91.5, `Expected -10% SL trigger ~90.70 incl. charges, got ${negSlPlace.triggerPrice}`);
+  assert.strictEqual(negSlPlace.price, Number((negSlPlace.triggerPrice - 0.5).toFixed(2)), 'Limit must be 0.50 below SL trigger');
+
+  // Case 10B: Profit reaches 50% of Target -> must cancel pending -10% SL order BEFORE sending target order
+  const negSlId = negSlPlace.orderId;
+  slTestLtp = 116;
+  await slEngine._evaluatePositions();
+  const cancelIdx = slTimeline.findIndex(e => e.op === 'cancelPending' && e.cancelledIds.includes(negSlId));
+  const stage1Idx = slTimeline.findIndex(e => e.op === 'place' && String(e.reason || '').includes('50% Target'));
+  assert(cancelIdx >= 0 && stage1Idx > cancelIdx, 'Must cancel pending SL order BEFORE sending profit target order');
+
+  // Case 10C: Fresh position with Positive SL = +10% (Opening ₹10,000, 100 qty @ ₹100)
+  slTimeline.length = 0;
+  openPendingSlIds = [];
+  slEngine.targetStates.clear();
+  slEngine.positionRules.clear();
+  slTestQty = 100;
+  slEngine.setPositionRule('acc_sl', 'NIFTY01DEC26C25000', 'MIS', {
+    stopLossNetPct: 10, // Positive +10% Profit SL -> ~110.75 incl. charges
+    targetNetProfitPct: 0,
+    enabled: true
+  });
+
+  // At LTP ₹105 (below +10% target ~110.75) -> NO SL order yet, NO false loss exit!
+  slTestLtp = 105;
+  await slEngine._evaluatePositions();
+  assert.strictEqual(slTimeline.length, 0, 'Positive +10% SL must NOT exit at loss or place SL when LTP <= SL target');
+
+  // At LTP ₹113 (above +10% target ~110.75) -> sends SL order in profit @ ~110.75 / ~110.25!
+  slTestLtp = 113;
+  await slEngine._evaluatePositions();
+  const posSlPlace = slTimeline.find(e => e.op === 'place');
+  assert(posSlPlace, 'Positive +10% SL must send Profit SL-LMT order once LTP > profit SL price');
+  assert(posSlPlace.triggerPrice >= 110 && posSlPlace.triggerPrice < 112, `Expected +10% profit SL trigger ~110.75 incl. charges, got ${posSlPlace.triggerPrice}`);
+  assert.strictEqual(posSlPlace.price, Number((posSlPlace.triggerPrice - 0.5).toFixed(2)));
+
+  // Case 10D: Price crashes on negative -10% SL (unprotected/gapped) -> must exit on loss
+  slTimeline.length = 0;
+  openPendingSlIds = [];
+  slEngine.targetStates.clear();
+  slEngine.positionRules.clear();
+  slTestQty = 100;
+  slTestLtp = 88;
+  slEngine.setPositionRule('acc_sl', 'NIFTY01DEC26C25000', 'MIS', { stopLossNetPct: -10, enabled: true });
+  await slEngine._evaluatePositions();
+  assert(slTimeline.some(e => e.op === 'exit'), 'Negative SL must exit on loss when threshold is breached');
+  console.log(`   ✅ Signed SL verified: -10% SL (${negSlPlace.triggerPrice}/${negSlPlace.price}) -> cancelled before Target (${stage1Idx > cancelIdx}) -> +10% Profit SL (${posSlPlace.triggerPrice}/${posSlPlace.price}) -> loss breach exit.`);
 
   scheduler.stopScheduler();
   mgr.mockManager.stopSimulation();

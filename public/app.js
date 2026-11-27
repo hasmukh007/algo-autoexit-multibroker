@@ -359,8 +359,10 @@ function loadSelectedAccountRiskInputs(accountId) {
   state.selectedRiskAccountId = acc.id;
   state.accountRiskInputsLoadedFor = acc.id;
   try { localStorage.setItem('algo_selected_risk_account', acc.id); } catch (e) {}
-  const fallbackTarget = (state.riskSettings && state.riskSettings.targetDailyNetProfitPct) || 1.5;
-  const fallbackSl = (state.riskSettings && state.riskSettings.maxDailyLossNetPct) || 1.0;
+  const fallbackTarget = (state.riskSettings && state.riskSettings.targetDailyNetProfitPct) ?? 1.5;
+  const fallbackSl = (state.riskSettings && state.riskSettings.maxDailyLossNetPct !== undefined)
+    ? state.riskSettings.maxDailyLossNetPct
+    : -1.0;
   const fallbackBuf = (state.riskSettings && state.riskSettings.nearThresholdBufferPct) || 98;
   if (DOM.quickTargetPct) DOM.quickTargetPct.value = acc.targetNetProfitPct !== undefined ? acc.targetNetProfitPct : fallbackTarget;
   if (DOM.quickStopLossPct) DOM.quickStopLossPct.value = acc.stopLossNetPct !== undefined ? acc.stopLossNetPct : fallbackSl;
@@ -376,9 +378,9 @@ function updateQuickHints() {
     : Number(state.openingBalance.openingBalance || 500000);
   const bal = Number(state.openingBalance.openingBalance || accCap || 500000);
   const deployPct = Math.max(1, Math.min(100, Number((DOM.quickCapitalDeployPct && DOM.quickCapitalDeployPct.value) || 100)));
-  const targetPct = Number(DOM.quickTargetPct.value || 1.5);
+  const targetPct = Number(DOM.quickTargetPct.value !== '' ? DOM.quickTargetPct.value : 1.5);
   const nearBuf = Number(DOM.quickNearBuffer.value || 98);
-  const stopPct = Number(DOM.quickStopLossPct.value || 1.0);
+  const stopPct = Number(DOM.quickStopLossPct.value !== '' ? DOM.quickStopLossPct.value : -1.0);
   const maxOrders = Math.max(0, Math.round(Number((DOM.quickMaxOrders && DOM.quickMaxOrders.value) || 0)));
   const routing = (DOM.quickRoutingMode && DOM.quickRoutingMode.value === 'all_funded') ? 'all_funded' : 'selected';
 
@@ -397,7 +399,13 @@ function updateQuickHints() {
   }
   DOM.quickTargetInrHint.textContent = `= ₹${targetInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })} Net`;
   DOM.quickNearInrHint.textContent = `≥ ₹${nearInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })} (${nearBuf}%)`;
-  DOM.quickStopInrHint.textContent = `= -₹${stopInr.toLocaleString('en-IN', { maximumFractionDigits: 0 })} Net`;
+  if (stopPct > 0) {
+    DOM.quickStopInrHint.textContent = `= +₹${Math.abs(stopInr).toLocaleString('en-IN', { maximumFractionDigits: 0 })} Profit SL`;
+  } else if (stopPct < 0) {
+    DOM.quickStopInrHint.textContent = `= -₹${Math.abs(stopInr).toLocaleString('en-IN', { maximumFractionDigits: 0 })} Loss SL`;
+  } else {
+    DOM.quickStopInrHint.textContent = '= SL Off (0%)';
+  }
 
   const daily = state.dailyOrders || {};
   const usedOrders = Number(daily.ordersPlacedToday || 0);
@@ -1031,17 +1039,24 @@ function renderPositionsTable() {
     if (rule && rule.enabled) {
       const parts = [];
       if (rule.targetNetProfitPct) parts.push(`Target: +${rule.targetNetProfitPct}% (near ${rule.nearThresholdBufferPct || 98}%)`);
-      if (rule.stopLossNetPct) parts.push(`SL: -${rule.stopLossNetPct}%`);
+      if (rule.stopLossNetPct !== undefined && Number(rule.stopLossNetPct) !== 0) {
+        parts.push(`SL: ${rule.stopLossNetPct > 0 ? '+' : ''}${rule.stopLossNetPct}%`);
+      }
       ruleBadge = `<span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8;">${parts.join(' | ')}</span>`;
     }
     const ts = state.targetStates && state.targetStates[key];
     if (ts && pos.isOpen) {
+      const slLabel = ts.slTriggerPrice > 0
+        ? `SL ₹${ts.slTriggerPrice}${ts.slSource === 'PROFIT_SL' ? ' (Profit)' : (ts.slSource === 'LOSS_SL' ? ' (Loss)' : '')}`
+        : '';
       const tsLabel = ts.stage === 'TRAILING'
         ? `Trailing SL ₹${ts.slTriggerPrice} (${ts.slQty} qty)`
         : (ts.stage === 'BREAKEVEN_SL_PLACED'
           ? `50% Hit • SL ₹${ts.slTriggerPrice}`
-          : `50%: ₹${ts.halfTargetPrice} | 100%: ₹${ts.fullTargetPrice}`);
-      ruleBadge += ` <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #10b981; margin-left:4px;">${tsLabel}</span>`;
+          : [slLabel, ts.fullTargetPrice > 0 ? `50%: ₹${ts.halfTargetPrice} | 100%: ₹${ts.fullTargetPrice}` : ''].filter(Boolean).join(' • '));
+      if (tsLabel) {
+        ruleBadge += ` <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #10b981; margin-left:4px;">${tsLabel}</span>`;
+      }
     }
 
     html += `
@@ -1239,7 +1254,7 @@ function renderAccountsTable() {
       ? '₹0/order'
       : `₹${acc.brokeragePerOrder ?? 20}/order`;
     const targetPct = acc.targetNetProfitPct !== undefined ? Number(acc.targetNetProfitPct) : 1.5;
-    const stopPct = acc.stopLossNetPct !== undefined ? Number(acc.stopLossNetPct) : 1.0;
+    const stopPct = acc.stopLossNetPct !== undefined ? Number(acc.stopLossNetPct) : -1.0;
     const balText = acc.availableCash !== undefined && acc.availableCash !== null
       ? formatCurrency(acc.availableCash)
       : (acc.broker === 'paper' && acc.initialBalance ? formatCurrency(acc.initialBalance) : '--');
@@ -1254,7 +1269,7 @@ function renderAccountsTable() {
         <td class="mono">${acc.clientCode || 'Configured'}</td>
         <td class="mono">${brkLabel}</td>
         <td class="mono">
-          <span class="profit-text">+${targetPct}%</span> / <span class="loss-text">-${stopPct}%</span>
+          <span class="profit-text">+${targetPct}%</span> / <span class="${stopPct > 0 ? 'profit-text' : 'loss-text'}">${stopPct > 0 ? '+' : ''}${stopPct}%</span>
         </td>
         <td>
           <span class="badge" style="${acc.isAuthenticated ? 'background: var(--profit-bg); color: var(--profit-color);' : (acc.lastError ? 'background: var(--loss-bg); color: var(--loss-color);' : 'background: var(--warning-bg); color: var(--warning-color);')}">
@@ -1536,15 +1551,15 @@ function openAutoExitModal(symbol, product, accountId) {
   const existing = state.rules[key];
 
   if (existing) {
-    DOM.ruleTargetNetPct.value = existing.targetNetProfitPct || DOM.quickTargetPct.value;
+    DOM.ruleTargetNetPct.value = existing.targetNetProfitPct !== undefined ? existing.targetNetProfitPct : DOM.quickTargetPct.value;
     DOM.ruleNearBuffer.value = existing.nearThresholdBufferPct || DOM.quickNearBuffer.value;
-    DOM.ruleStopLossNetPct.value = existing.stopLossNetPct || DOM.quickStopLossPct.value;
+    DOM.ruleStopLossNetPct.value = existing.stopLossNetPct !== undefined ? existing.stopLossNetPct : DOM.quickStopLossPct.value;
     DOM.ruleTrailingSL.value = existing.trailingSLPoints || '';
     DOM.deleteRuleBtn.style.display = 'inline-block';
   } else {
-    DOM.ruleTargetNetPct.value = DOM.quickTargetPct.value || 1.5;
+    DOM.ruleTargetNetPct.value = DOM.quickTargetPct.value !== '' ? DOM.quickTargetPct.value : 1.5;
     DOM.ruleNearBuffer.value = DOM.quickNearBuffer.value || 98;
-    DOM.ruleStopLossNetPct.value = DOM.quickStopLossPct.value || 1.0;
+    DOM.ruleStopLossNetPct.value = DOM.quickStopLossPct.value !== '' ? DOM.quickStopLossPct.value : -1.0;
     DOM.ruleTrailingSL.value = '';
     DOM.deleteRuleBtn.style.display = 'none';
   }
@@ -1601,9 +1616,9 @@ DOM.deleteRuleBtn.addEventListener('click', async () => {
 DOM.applyGlobalRuleBtn.addEventListener('click', async () => {
   const selectedRiskAccId = DOM.quickRiskAccountSelect ? DOM.quickRiskAccountSelect.value : '';
   const capitalDeployPct = Math.max(1, Math.min(100, Number((DOM.quickCapitalDeployPct && DOM.quickCapitalDeployPct.value) || 100)));
-  const targetPct = Number(DOM.quickTargetPct.value || 1.5);
+  const targetPct = Number(DOM.quickTargetPct.value !== '' ? DOM.quickTargetPct.value : 1.5);
   const nearBuf = Number(DOM.quickNearBuffer.value || 98);
-  const stopLossPct = Number(DOM.quickStopLossPct.value || 1.0);
+  const stopLossPct = Number(DOM.quickStopLossPct.value !== '' ? DOM.quickStopLossPct.value : -1.0);
   const maxDailyOrders = Math.max(0, Math.round(Number((DOM.quickMaxOrders && DOM.quickMaxOrders.value) || 0)));
   const orderRoutingMode = (DOM.quickRoutingMode && DOM.quickRoutingMode.value === 'all_funded') ? 'all_funded' : 'selected';
 
@@ -1667,8 +1682,9 @@ DOM.applyGlobalRuleBtn.addEventListener('click', async () => {
   refreshOrderSizingFromBalance();
   const accObj = state.accounts.find(a => a.id === selectedRiskAccId);
   const accLabel = accObj ? `${accObj.name} ` : '';
+  const slToastTxt = `${stopLossPct > 0 ? '+' : ''}${stopLossPct}%`;
   showToast(
-    `Saved ${accLabel}SL/Target (+${targetPct}% / -${stopLossPct}%) & Day Settings: Deploy ${capitalDeployPct}%, Max Orders ${maxDailyOrders || '∞'}, Routing: ${orderRoutingMode === 'all_funded' ? 'All Funded Brokers' : 'Selected Broker'}`,
+    `Saved ${accLabel}SL/Target (+${targetPct}% / ${slToastTxt}) & Day Settings: Deploy ${capitalDeployPct}%, Max Orders ${maxDailyOrders || '∞'}, Routing: ${orderRoutingMode === 'all_funded' ? 'All Funded Brokers' : 'Selected Broker'}`,
     'success'
   );
   loadPositions();
@@ -1748,7 +1764,7 @@ function openAddAccountModal(defaultBroker = 'kotakneo') {
   if (DOM.sahiAccessToken) DOM.sahiAccessToken.value = '';
   if (DOM.paperInitialBalance) DOM.paperInitialBalance.value = '500000';
   if (DOM.accTargetNetPct) DOM.accTargetNetPct.value = '1.5';
-  if (DOM.accStopLossNetPct) DOM.accStopLossNetPct.value = '1.0';
+  if (DOM.accStopLossNetPct) DOM.accStopLossNetPct.value = '-1.0';
   if (DOM.accNearBufferPct) DOM.accNearBufferPct.value = '98';
   applyBrokerageDefaults(defaultBroker);
   switchBrokerFields(defaultBroker);
@@ -1819,7 +1835,7 @@ function openEditAccountModal(acc) {
     updateBrokerageFieldsUI();
   }
   if (DOM.accTargetNetPct) DOM.accTargetNetPct.value = acc.targetNetProfitPct !== undefined ? acc.targetNetProfitPct : 1.5;
-  if (DOM.accStopLossNetPct) DOM.accStopLossNetPct.value = acc.stopLossNetPct !== undefined ? acc.stopLossNetPct : 1.0;
+  if (DOM.accStopLossNetPct) DOM.accStopLossNetPct.value = acc.stopLossNetPct !== undefined ? acc.stopLossNetPct : -1.0;
   if (DOM.accNearBufferPct) DOM.accNearBufferPct.value = acc.nearThresholdBufferPct !== undefined ? acc.nearThresholdBufferPct : 98;
 
   switchBrokerFields(acc.broker);
@@ -1878,8 +1894,8 @@ function buildAccountPayloadFromModal() {
       ? 0
       : Math.max(0, Number(DOM.accBrokeragePerOrder.value || 0));
   }
-  if (DOM.accTargetNetPct) payload.targetNetProfitPct = Math.max(0, Number(DOM.accTargetNetPct.value || 1.5));
-  if (DOM.accStopLossNetPct) payload.stopLossNetPct = Math.max(0, Number(DOM.accStopLossNetPct.value || 1.0));
+  if (DOM.accTargetNetPct) payload.targetNetProfitPct = Math.max(0, Number(DOM.accTargetNetPct.value !== '' ? DOM.accTargetNetPct.value : 1.5));
+  if (DOM.accStopLossNetPct) payload.stopLossNetPct = Number(DOM.accStopLossNetPct.value !== '' ? DOM.accStopLossNetPct.value : -1.0);
   if (DOM.accNearBufferPct) payload.nearThresholdBufferPct = Math.max(50, Math.min(100, Number(DOM.accNearBufferPct.value || 98)));
 
   if (DOM.accOneTimeTotp && DOM.accOneTimeTotp.value.trim()) {
