@@ -13,6 +13,7 @@ const state = {
   },
   accounts: [],
   positions: [],
+  holdings: [],
   orders: [],
   rules: {},
   totals: {
@@ -51,6 +52,8 @@ const DOM = {
   switchFeedBtn: document.getElementById('switchFeedBtn'),
   istClock: document.getElementById('istClock'),
   marketPill: document.getElementById('marketPill'),
+  fetchPortfolioBtn: document.getElementById('fetchPortfolioBtn'),
+  portfolioFetchStatusBadge: document.getElementById('portfolioFetchStatusBadge'),
   openAccountsBtn: document.getElementById('openAccountsBtn'),
   accountsBtnText: document.getElementById('accountsBtnText'),
   connStatus: document.getElementById('connStatus'),
@@ -103,6 +106,9 @@ const DOM = {
   // Tables
   positionsTableBody: document.getElementById('positionsTableBody'),
   refreshPositionsBtn: document.getElementById('refreshPositionsBtn'),
+  holdingsTableBody: document.getElementById('holdingsTableBody'),
+  refreshHoldingsBtn: document.getElementById('refreshHoldingsBtn'),
+  holdingsCountBadge: document.getElementById('holdingsCountBadge'),
   ordersTableBody: document.getElementById('ordersTableBody'),
   refreshOrdersBtn: document.getElementById('refreshOrdersBtn'),
   accountsTableBody: document.getElementById('accountsTableBody'),
@@ -518,6 +524,9 @@ function handleMarketTick(payload) {
   if (payload.riskSettings || payload.dailyOrders) {
     syncRiskSettingsToUI(payload.riskSettings || state.riskSettings, payload.dailyOrders || state.dailyOrders);
   }
+  if (payload.portfolioSchedule) {
+    updatePortfolioScheduleBadge(payload.portfolioSchedule);
+  }
 }
 
 function updateMetricHeaders() {
@@ -586,8 +595,22 @@ async function loadStatus() {
       renderAccountsTable();
       updateBrokerSelect();
       syncRiskSettingsToUI(data.riskSettings || {}, data.dailyOrders || null, !state.selectedRoutingMode);
+      if (data.portfolioSchedule) updatePortfolioScheduleBadge(data.portfolioSchedule);
     }
   } catch (err) {}
+}
+
+function updatePortfolioScheduleBadge(schedule) {
+  if (!DOM.portfolioFetchStatusBadge || !schedule) return;
+  if (schedule.isQuietHours) {
+    DOM.portfolioFetchStatusBadge.textContent = '4PM–9AM Auto-Fetch Paused';
+    DOM.portfolioFetchStatusBadge.style.background = 'rgba(245, 158, 11, 0.18)';
+    DOM.portfolioFetchStatusBadge.style.color = '#fbbf24';
+  } else {
+    DOM.portfolioFetchStatusBadge.textContent = 'Live Auto-Fetch (9AM–4PM)';
+    DOM.portfolioFetchStatusBadge.style.background = 'rgba(16, 185, 129, 0.16)';
+    DOM.portfolioFetchStatusBadge.style.color = '#10b981';
+  }
 }
 
 function updateModeUI(mode) {
@@ -634,9 +657,13 @@ function updateBrokerSelect() {
   }
 }
 
-async function loadPositions(force = false) {
+async function loadPositions(force = false, manual = false) {
   try {
-    const res = await fetch(force ? '/api/positions?force=1' : '/api/positions');
+    const qs = [];
+    if (force) qs.push('force=1');
+    if (manual) qs.push('manual=1');
+    const url = qs.length > 0 ? `/api/positions?${qs.join('&')}` : '/api/positions';
+    const res = await fetch(url);
     const data = await res.json();
     if (data.success && Array.isArray(data.data)) {
       state.positions = data.data;
@@ -645,15 +672,77 @@ async function loadPositions(force = false) {
   } catch (e) {}
 }
 
-async function loadOrders(force = false) {
+async function loadHoldings(force = false, manual = false) {
   try {
-    const res = await fetch(force ? '/api/orders?force=1' : '/api/orders');
+    const qs = [];
+    if (force) qs.push('force=1');
+    if (manual) qs.push('manual=1');
+    const url = qs.length > 0 ? `/api/holdings?${qs.join('&')}` : '/api/holdings';
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.success && Array.isArray(data.data)) {
+      state.holdings = data.data;
+      renderHoldingsTable();
+    }
+  } catch (e) {}
+}
+
+async function loadOrders(force = false, manual = false) {
+  try {
+    const qs = [];
+    if (force) qs.push('force=1');
+    if (manual) qs.push('manual=1');
+    const url = qs.length > 0 ? `/api/orders?${qs.join('&')}` : '/api/orders';
+    const res = await fetch(url);
     const data = await res.json();
     if (data.success && Array.isArray(data.data)) {
       state.orders = data.data;
       renderOrdersTable();
     }
   } catch (e) {}
+}
+
+async function fetchAllPortfolioNow() {
+  if (DOM.fetchPortfolioBtn) DOM.fetchPortfolioBtn.disabled = true;
+  showToast('Fetching Positions, Funds, Holdings & Orders from all brokers...', 'info');
+  try {
+    const res = await fetch('/api/portfolio/fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    const d = await res.json();
+    if (d.success) {
+      if (Array.isArray(d.positions)) {
+        state.positions = d.positions;
+        renderPositionsTable();
+      }
+      if (Array.isArray(d.holdings)) {
+        state.holdings = d.holdings;
+        renderHoldingsTable();
+      }
+      if (Array.isArray(d.orders)) {
+        state.orders = d.orders;
+        renderOrdersTable();
+      }
+      if (d.funds) {
+        DOM.availableFunds.textContent = formatCurrency(d.funds.availableCash);
+        DOM.utilizedMargin.textContent = formatCurrency(d.funds.utilizedMargin);
+      }
+      if (d.portfolioSchedule) updatePortfolioScheduleBadge(d.portfolioSchedule);
+      if (typeof refreshOrderSizingFromBalance === 'function') refreshOrderSizingFromBalance();
+      showToast(
+        `Fetched: ${(d.positions || []).length} positions, ${(d.holdings || []).length} holdings, ${(d.orders || []).length} orders | Funds: ${formatCurrency((d.funds && d.funds.availableCash) || 0)}`,
+        'success'
+      );
+    } else {
+      showToast(d.message || 'Manual fetch failed', 'error');
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    if (DOM.fetchPortfolioBtn) DOM.fetchPortfolioBtn.disabled = false;
+  }
 }
 
 async function loadAccounts() {
@@ -780,6 +869,31 @@ function renderPositionsTable() {
       }
     });
   });
+}
+
+function renderHoldingsTable() {
+  if (!DOM.holdingsTableBody) return;
+  const list = state.holdings || [];
+  if (DOM.holdingsCountBadge) DOM.holdingsCountBadge.textContent = String(list.length);
+  if (list.length === 0) {
+    DOM.holdingsTableBody.innerHTML = `<tr><td colspan="7" class="empty-state">No holdings loaded. Click "Fetch Pos/Funds/Hold/Orders" or "Refresh Holdings".</td></tr>`;
+    return;
+  }
+  DOM.holdingsTableBody.innerHTML = list.map(h => {
+    const bClass = getBrokerBadgeClass(h.broker);
+    const pnl = Number(h.pnl || ((Number(h.ltp || 0) - Number(h.avgPrice || 0)) * Number(h.quantity || 0)) || 0);
+    return `
+      <tr>
+        <td><span class="badge ${bClass}">${h.brokerName || h.broker || '--'}</span></td>
+        <td><strong>${h.symbol || '--'}</strong></td>
+        <td><span class="badge">${h.exchange || 'NSE'}</span></td>
+        <td class="text-right mono">${Number(h.quantity || 0)}</td>
+        <td class="text-right mono">₹${Number(h.avgPrice || 0).toFixed(2)}</td>
+        <td class="text-right mono">₹${Number(h.ltp || 0).toFixed(2)}</td>
+        <td class="text-right mono ${pnl >= 0 ? 'profit-text' : 'loss-text'}">${pnl >= 0 ? '+' : ''}₹${pnl.toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
 }
 
 function renderOrdersTable() {
@@ -1973,14 +2087,23 @@ DOM.tabBtns.forEach(btn => {
     const target = btn.getAttribute('data-tab');
     document.getElementById(target).classList.add('active');
 
-    if (target === 'tabPositions') loadPositions();
+    if (target === 'tabPositions') {
+      loadPositions();
+      loadHoldings();
+    }
     if (target === 'tabOrderBook') loadOrders();
     if (target === 'tabBrokers') loadAccounts();
   });
 });
 
-DOM.refreshPositionsBtn.addEventListener('click', () => loadPositions(true));
-DOM.refreshOrdersBtn.addEventListener('click', () => loadOrders(true));
+if (DOM.fetchPortfolioBtn) {
+  DOM.fetchPortfolioBtn.addEventListener('click', fetchAllPortfolioNow);
+}
+DOM.refreshPositionsBtn.addEventListener('click', () => loadPositions(true, true));
+if (DOM.refreshHoldingsBtn) {
+  DOM.refreshHoldingsBtn.addEventListener('click', () => loadHoldings(true, true));
+}
+DOM.refreshOrdersBtn.addEventListener('click', () => loadOrders(true, true));
 DOM.clearLogsBtn.addEventListener('click', () => DOM.logsContainer.innerHTML = '');
 
 function updateTopNiftyTicker(snapshot) {
@@ -2053,6 +2176,7 @@ window.addEventListener('DOMContentLoaded', () => {
   loadStatus();
   loadNiftyFeedSnapshot();
   loadPositions();
+  loadHoldings();
   loadOrders();
   loadAccounts();
   initEventSource();

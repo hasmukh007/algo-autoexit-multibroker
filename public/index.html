@@ -95,6 +95,17 @@
       </div>
 
       <div class="nav-right">
+        <!-- Manual Portfolio Fetch Button (Always works including 4PM-9AM quiet hours) -->
+        <button class="btn-primary btn-sm" id="fetchPortfolioBtn" title="Fetch Positions, Funds, Holdings & Orders across all brokers now (Auto-fetch pauses 4:00 PM - 9:00 AM IST)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;">
+            <path d="M23 4v6h-6"></path>
+            <path d="M1 20v-6h6"></path>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          <span>Fetch Pos/Funds/Hold/Orders</span>
+        </button>
+        <span class="badge" id="portfolioFetchStatusBadge" title="Portfolio Auto-Fetch Schedule (9:00 AM - 4:00 PM IST)">Checking schedule...</span>
+
         <!-- Multi-Broker Accounts Pill -->
         <button class="btn-broker-accounts" id="openAccountsBtn" title="Manage Angel One, Dhan, Kotak Neo Accounts">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -378,6 +389,38 @@
             <tbody id="positionsTableBody">
               <tr>
                 <td colspan="12" class="empty-state">Loading positions across brokers...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Holdings Section -->
+        <div class="panel-header" style="margin-top: 22px;">
+          <div class="panel-header-title">
+            <h2>Multi-Broker Holdings <span class="badge" id="holdingsCountBadge">0</span></h2>
+            <p>Demat holdings across Angel One, Dhan, Kotak Neo, and Sahi (auto-fetch paused 4:00 PM – 9:00 AM IST; click Fetch/Refresh anytime).</p>
+          </div>
+          <div class="panel-header-actions">
+            <button class="btn-sm btn-outline" id="refreshHoldingsBtn">Refresh Holdings</button>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table" id="holdingsTable">
+            <thead>
+              <tr>
+                <th>Broker</th>
+                <th>Symbol</th>
+                <th>Exchange</th>
+                <th class="text-right">Qty</th>
+                <th class="text-right">Avg Price</th>
+                <th class="text-right">LTP</th>
+                <th class="text-right">P&amp;L (₹)</th>
+              </tr>
+            </thead>
+            <tbody id="holdingsTableBody">
+              <tr>
+                <td colspan="7" class="empty-state">Click "Fetch Pos/Funds/Hold/Orders" or "Refresh Holdings" to load holdings.</td>
               </tr>
             </tbody>
           </table>

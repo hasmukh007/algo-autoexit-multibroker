@@ -227,7 +227,8 @@ setInterval(async () => {
       accounts: multiBrokerManager.getAccounts(),
       rules: autoExitEngine.getAllPositionRules(),
       riskSettings: configManager.loadConfig().riskSettings,
-      dailyOrders: multiBrokerManager.getDailyOrderStats()
+      dailyOrders: multiBrokerManager.getDailyOrderStats(),
+      portfolioSchedule: multiBrokerManager.getPortfolioSchedule()
     };
 
     broadcastSSE('market_tick', payload);
@@ -517,7 +518,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (pathname === '/api/opening-balance/sync' && method === 'POST') {
-        const result = await openingBalanceScheduler.captureOpeningBalance(false);
+        const result = await openingBalanceScheduler.captureOpeningBalance(false, { force: true, manual: true });
         autoExitEngine.log('INFO', `Synced opening balance across brokers: ₹${result.openingBalance.toLocaleString('en-IN')}`);
         return sendJson(res, 200, { success: true, data: result });
       }
@@ -531,8 +532,44 @@ const server = http.createServer(async (req, res) => {
 
       if (pathname === '/api/funds' && method === 'GET') {
         const force = parsedUrl.searchParams.get('force') === '1';
-        const funds = await multiBrokerManager.getAllFunds({ force });
+        const manual = parsedUrl.searchParams.get('manual') === '1';
+        const funds = await multiBrokerManager.getAllFunds({ force, manual });
         return sendJson(res, 200, { success: true, data: funds });
+      }
+
+      if (pathname === '/api/portfolio/fetch' && method === 'POST') {
+        const fetched = await multiBrokerManager.fetchAllPortfolioManual();
+        const openBalData = openingBalanceScheduler.getOpeningBalanceData();
+        const openingBalance = Number(openBalData.openingBalance || 500000);
+        const enrichedPositions = (fetched.positions || []).map(pos => {
+          const brokerPref = multiBrokerManager.getAccountBrokerage(pos.accountId, pos.broker);
+          const executedOrderCount = multiBrokerManager.getExecutedOrderCount(pos.accountId, pos.symbol);
+          const chargeInfo = ChargesCalculator.calculatePositionCharges({ ...pos, executedOrderCount }, brokerPref);
+          const netProfitPctOfCapital = openingBalance > 0
+            ? Number(((chargeInfo.netPnl / openingBalance) * 100).toFixed(2))
+            : 0;
+          return {
+            ...pos,
+            chargeDetails: chargeInfo,
+            grossPnl: chargeInfo.grossPnl,
+            totalCharges: chargeInfo.totalCharges,
+            netPnl: chargeInfo.netPnl,
+            netProfitPctOfCapital
+          };
+        });
+        autoExitEngine.log(
+          'INFO',
+          `Manual portfolio fetch: ${enrichedPositions.length} positions, ${(fetched.holdings || []).length} holdings, ${(fetched.orders || []).length} orders, Cash ₹${Number((fetched.funds && fetched.funds.availableCash) || 0).toLocaleString('en-IN')}`
+        );
+        return sendJson(res, 200, {
+          success: true,
+          fetchedAt: fetched.fetchedAt,
+          portfolioSchedule: fetched.portfolioSchedule,
+          funds: fetched.funds,
+          positions: enrichedPositions,
+          holdings: fetched.holdings || [],
+          orders: fetched.orders || []
+        });
       }
 
       /* ============================================================
@@ -540,7 +577,8 @@ const server = http.createServer(async (req, res) => {
          ============================================================ */
       if (pathname === '/api/positions' && method === 'GET') {
         const force = parsedUrl.searchParams.get('force') === '1';
-        const rawPositions = await multiBrokerManager.getAllPositions({ force });
+        const manual = parsedUrl.searchParams.get('manual') === '1';
+        const rawPositions = await multiBrokerManager.getAllPositions({ force, manual });
         const openBalData = openingBalanceScheduler.getOpeningBalanceData();
         const openingBalance = Number(openBalData.openingBalance || 500000);
 
@@ -567,7 +605,8 @@ const server = http.createServer(async (req, res) => {
 
       if (pathname === '/api/holdings' && method === 'GET') {
         const force = parsedUrl.searchParams.get('force') === '1';
-        const holdings = await multiBrokerManager.getAllHoldings({ force });
+        const manual = parsedUrl.searchParams.get('manual') === '1';
+        const holdings = await multiBrokerManager.getAllHoldings({ force, manual });
         return sendJson(res, 200, { success: true, data: holdings });
       }
 
@@ -576,7 +615,8 @@ const server = http.createServer(async (req, res) => {
          ============================================================ */
       if (pathname === '/api/orders' && method === 'GET') {
         const force = parsedUrl.searchParams.get('force') === '1';
-        const orders = await multiBrokerManager.getAllOrders({ force });
+        const manual = parsedUrl.searchParams.get('manual') === '1';
+        const orders = await multiBrokerManager.getAllOrders({ force, manual });
         return sendJson(res, 200, { success: true, data: orders });
       }
 
@@ -772,6 +812,7 @@ const server = http.createServer(async (req, res) => {
           accounts: multiBrokerManager.getAccounts(),
           riskSettings: currentConfig.riskSettings,
           dailyOrders: multiBrokerManager.getDailyOrderStats(),
+          portfolioSchedule: multiBrokerManager.getPortfolioSchedule(),
           autoExitRunning: autoExitEngine.isRunning
         });
       }

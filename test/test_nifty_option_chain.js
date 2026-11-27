@@ -4,7 +4,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 const path = require('path');
 
-const { NiftyFeedManager, computeAtmStrike, computeOiBuildup } = require('../lib/niftyFeedManager');
+const { NiftyFeedManager, computeAtmStrike, computeOiBuildup, isPortfolioQuietHoursIST } = require('../lib/niftyFeedManager');
 const { NiftyCandleManager, aggregateTo3MinuteCandles } = require('../lib/niftyCandleManager');
 const {
   isISTTradingHours,
@@ -953,7 +953,7 @@ async function run() {
     assert.deepStrictEqual(largeSized.slices, [1755, 1560]);
 
     // Test MultiBrokerManager.placeOrder freeze splitting + autoQuantity
-    const mgrSplit = new MultiBrokerManager({ loadConfig: () => ({ mode: 'live' }) }, { scripMasterManager: scripMgr, dailyOrdersFile: null });
+    const mgrSplit = new MultiBrokerManager({ loadConfig: () => ({ mode: 'live' }) }, { scripMasterManager: scripMgr, dailyOrdersFile: null, enforceQuietHours: false });
     for (const inst of mgrSplit.brokerInstances.values()) {
       if (typeof inst.disconnect === 'function') inst.disconnect();
     }
@@ -1144,6 +1144,7 @@ async function run() {
       {
         scripMasterManager: scripMgr,
         dailyOrdersFile: null,
+        enforceQuietHours: false,
         dailyRiskGuardProvider: () => (dailyBlocked ? { blocked: true, reason: 'Max loss hit' } : { blocked: false, reason: null })
       }
     );
@@ -1235,6 +1236,69 @@ async function run() {
       product: 'MIS'
     });
     assert.strictEqual(exitBypassRes.success, true);
+
+    // Test 4:00 PM - 9:00 AM IST Quiet Hours pause vs Manual Fetch
+    assert.strictEqual(isPortfolioQuietHoursIST(new Date('2026-11-26T15:59:59+05:30')), false);
+    assert.strictEqual(isPortfolioQuietHoursIST(new Date('2026-11-26T16:00:00+05:30')), true);
+    assert.strictEqual(isPortfolioQuietHoursIST(new Date('2026-11-27T08:59:59+05:30')), true);
+    assert.strictEqual(isPortfolioQuietHoursIST(new Date('2026-11-27T09:00:00+05:30')), false);
+
+    const mgrQuiet = new MultiBrokerManager(
+      { loadConfig: () => ({ mode: 'live', riskSettings: {} }) },
+      { scripMasterManager: scripMgr, dailyOrdersFile: null, enforceQuietHours: true }
+    );
+    for (const inst of mgrQuiet.brokerInstances.values()) {
+      if (typeof inst.disconnect === 'function') inst.disconnect();
+    }
+    mgrQuiet.brokerInstances.clear();
+    let qPosCalls = 0, qFundsCalls = 0, qHoldCalls = 0, qOrdCalls = 0, qLoginOpts = null;
+    mgrQuiet.brokerInstances.set('q1', {
+      id: 'q1',
+      name: 'Quiet Broker',
+      broker: 'sahi',
+      isMock: false,
+      isAuthenticated: false,
+      _cache: {
+        positions: { data: [{ symbol: 'CACHED-POS', netQty: 1 }] },
+        holdings: { data: [{ symbol: 'CACHED-HOLD', quantity: 2 }] },
+        funds: { data: { availableCash: 1234, utilizedMargin: 0, totalBalance: 1234 } },
+        orders: { data: [{ orderId: 'CACHED-ORD' }] }
+      },
+      login: async (_t, opts) => { qLoginOpts = opts; return { success: true }; },
+      getPositions: async () => { qPosCalls++; return [{ symbol: 'LIVE-POS', netQty: 1 }]; },
+      getFunds: async () => { qFundsCalls++; return { availableCash: 9999, utilizedMargin: 0, totalBalance: 9999 }; },
+      getHoldings: async () => { qHoldCalls++; return [{ symbol: 'LIVE-HOLD', quantity: 5 }]; },
+      getOrderBook: async () => { qOrdCalls++; return [{ orderId: 'LIVE-ORD' }]; },
+      disconnect: () => {}
+    });
+
+    const quietTime5PM = new Date('2026-11-26T17:00:00+05:30');
+    const quietPos = await mgrQuiet.getAllPositions({ now: quietTime5PM });
+    const quietFunds = await mgrQuiet.getAllFunds({ now: quietTime5PM });
+    const quietHold = await mgrQuiet.getAllHoldings({ now: quietTime5PM });
+    const quietOrd = await mgrQuiet.getAllOrders({ now: quietTime5PM });
+    await mgrQuiet.loginAllBrokers({ now: quietTime5PM });
+    assert.strictEqual(qPosCalls, 0);
+    assert.strictEqual(qFundsCalls, 0);
+    assert.strictEqual(qHoldCalls, 0);
+    assert.strictEqual(qOrdCalls, 0);
+    assert.strictEqual(qLoginOpts.skipPortfolioFetch, true);
+    assert.strictEqual(quietPos[0].symbol, 'CACHED-POS');
+    assert.strictEqual(quietFunds.availableCash, 1234);
+    assert.strictEqual(quietFunds.quietHoursPaused, true);
+    assert.strictEqual(quietHold[0].symbol, 'CACHED-HOLD');
+    assert.strictEqual(quietOrd[0].orderId, 'CACHED-ORD');
+
+    // Manual button click ALWAYS fetches even during quiet hours
+    const manualAll = await mgrQuiet.fetchAllPortfolioManual();
+    assert.strictEqual(qPosCalls, 1);
+    assert.strictEqual(qFundsCalls, 1);
+    assert.strictEqual(qHoldCalls, 1);
+    assert.strictEqual(qOrdCalls, 1);
+    assert.strictEqual(manualAll.positions[0].symbol, 'LIVE-POS');
+    assert.strictEqual(manualAll.funds.availableCash, 9999);
+    assert.strictEqual(manualAll.holdings[0].symbol, 'LIVE-HOLD');
+    assert.strictEqual(manualAll.orders[0].orderId, 'LIVE-ORD');
 
     console.log('   ✅ ScripMasterManager loads lotSize/freezeQty at 08:55 AM IST, auto-sizes from balance, and splits orders > freeze.');
   } finally {
@@ -1517,6 +1581,7 @@ async function run() {
     assert(homeRes.body.includes('topContractLtp') && homeRes.body.includes('orderBannerLtp'), 'Dashboard must show current price at top of window and order panel');
     assert(homeRes.body.includes('orderStrikeSelect') && homeRes.body.includes('orderResetAtmBtn'), 'Dashboard must expose Strike Price selector for Call/Put');
     assert(homeRes.body.includes('quickCapitalDeployPct') && homeRes.body.includes('quickMaxOrders') && homeRes.body.includes('quickRoutingMode') && homeRes.body.includes('orderRoutingMode'), 'Dashboard must expose Capital Deploy %, Max Orders/Day, and Order Routing controls on top');
+    assert(homeRes.body.includes('fetchPortfolioBtn') && homeRes.body.includes('portfolioFetchStatusBadge') && homeRes.body.includes('holdingsTableBody') && homeRes.body.includes('refreshHoldingsBtn'), 'Dashboard must expose Fetch Pos/Funds/Hold/Orders button and Holdings table');
     const appJsRes = await httpRequest(testPort, '/app.js');
     assert.strictEqual(appJsRes.status, 200);
     assert(appJsRes.body.includes('brokerSelectSignature') && appJsRes.body.includes('algo_selected_order_broker'), 'updateBrokerSelect must preserve user-selected broker across SSE ticks');
@@ -1651,7 +1716,13 @@ async function run() {
     const statusRes = await httpRequest(testPort, '/api/status');
     assert.strictEqual(statusRes.status, 200);
     const statusData = JSON.parse(statusRes.body);
-    assert(statusData.riskSettings && statusData.dailyOrders, 'GET /api/status must expose riskSettings and dailyOrders stats');
+    assert(statusData.riskSettings && statusData.dailyOrders && statusData.portfolioSchedule, 'GET /api/status must expose riskSettings, dailyOrders, and portfolioSchedule');
+
+    const manualFetchHttpRes = await httpRequest(testPort, '/api/portfolio/fetch', 'POST', {});
+    assert.strictEqual(manualFetchHttpRes.status, 200);
+    const manualFetchHttpData = JSON.parse(manualFetchHttpRes.body);
+    assert.strictEqual(manualFetchHttpData.success, true);
+    assert(Array.isArray(manualFetchHttpData.positions) && Array.isArray(manualFetchHttpData.holdings) && Array.isArray(manualFetchHttpData.orders) && manualFetchHttpData.funds);
 
     const calcAllHttpRes = await httpRequest(testPort, '/api/orders/calculate-quantity', 'POST', {
       tradingSymbol: 'NIFTY27OCT26C25000',

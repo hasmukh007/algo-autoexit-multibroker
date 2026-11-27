@@ -1,7 +1,7 @@
 {
-  "date": "2026-11-26",
-  "openingBalance": 36716.33,
-  "capturedAt": "2026-11-26T15:00:49.759Z",
+  "date": "2026-11-27",
+  "openingBalance": 42474.63,
+  "capturedAt": "2026-11-27T03:30:47.493Z",
   "isAutoCaptured": true,
   "accounts": [
     {
@@ -24,10 +24,10 @@
       "id": "acc_sahi_1795675532208",
       "broker": "sahi",
       "name": "Sahi",
-      "availableCash": 36716.33,
-      "utilizedMargin": 104.3,
-      "totalBalance": 36716.33
+      "availableCash": 42474.63,
+      "utilizedMargin": 0,
+      "totalBalance": 42474.63
     }
   ],
-  "timeFormatted": "8:30:49 PM IST"
+  "timeFormatted": "9:00:47 am IST"
 }
