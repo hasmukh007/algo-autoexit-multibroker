@@ -1606,7 +1606,7 @@ async function run() {
     assert(appJsRes.body.includes('if (userChanged || ot === \'MKT\')'), 'Live ticks must NOT overwrite Limit or SL Limit/Trigger price textboxes');
     assert(appJsRes.body.includes('riskSettingsInitialized') && appJsRes.body.includes('algo_order_routing_mode'), 'app.js must preserve Execution Target dropdown across SSE ticks');
     assert(appJsRes.body.includes('chargeSettingsForm') && appJsRes.body.includes('updateQuickRiskAccountSelect') && appJsRes.body.includes('reset-paper-btn'), 'app.js must wire Charge Settings modal, per-account SL/Target select, and Paper reset');
-    assert(appJsRes.body.includes('renderPerTradeTable') && appJsRes.body.includes('getOrderFilterCategory'), 'app.js must wire Per Trade rendering and Order status filters');
+    assert(appJsRes.body.includes('renderPerTradeTable') && appJsRes.body.includes('getOrderFilterCategory') && appJsRes.body.includes('orders_updated') && appJsRes.body.includes('applyIncomingOrders'), 'app.js must wire Per Trade rendering, Order status filters, and live SSE order updates');
     const ocJsRes = await httpRequest(testPort, '/option-chain.js');
     assert.strictEqual(ocJsRes.status, 200);
     assert(ocJsRes.body.includes('algo_selected_order_broker') && ocJsRes.body.includes('sizingSeq') && ocJsRes.body.includes('renderOcBrokerSelect'), 'option-chain.js must preserve broker selection, guard async sizing, and show broker available balance');
