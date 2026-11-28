@@ -1637,10 +1637,12 @@ async function run() {
 
     const owRes = await httpRequest(testPort, '/order-window');
     assert.strictEqual(owRes.status, 200);
-    assert(owRes.body.includes('owBuyBtn') && owRes.body.includes('owSellBtn') && owRes.body.includes('order-confirm.js'), 'Order window page must expose quick Buy/Sell controls and confirmation modal');
+    assert(owRes.body.includes('owBuyBtn') && owRes.body.includes('owSellBtn') && owRes.body.includes('owSendSlBtn') && owRes.body.includes('owSendTargetBtn') && owRes.body.includes('owSlPct') && owRes.body.includes('owTargetPct') && owRes.body.includes('owTargetQtyPct') && owRes.body.includes('100% quantity') && owRes.body.includes('50% quantity') && owRes.body.includes('25% quantity') && owRes.body.includes('order-confirm.js'), 'Order window page must expose Buy/Sell controls, Bulk SL, Bulk Target Limit with 100/50/25% qty, and confirmation modal');
+    assert(homeRes.body.includes('Checked Broker Only') && !homeRes.body.includes('Selected Broker Only'), 'Must replace Selected Broker Only with Checked Broker Only');
+    assert(owRes.body.includes('Checked Broker Only') && !owRes.body.includes('Selected Broker'), 'Order window must use Checked Broker Only labels');
     const owJsRes = await httpRequest(testPort, '/order-window.js');
     assert.strictEqual(owJsRes.status, 200);
-    assert(owJsRes.body.includes('/api/orders/calculate-quantity') && owJsRes.body.includes('/api/status') && !owJsRes.body.includes('/api/portfolio') && owJsRes.body.includes('confirmOrderBeforeSend'), 'order-window.js must use valid endpoints for auto sizing and confirmation gate');
+    assert(owJsRes.body.includes('/api/orders/calculate-quantity') && owJsRes.body.includes('/api/orders/send-stoploss') && owJsRes.body.includes('/api/orders/send-target') && owJsRes.body.includes('targetQtyPct') && owJsRes.body.includes('/api/status') && !owJsRes.body.includes('/api/portfolio') && owJsRes.body.includes('confirmOrderBeforeSend'), 'order-window.js must support auto sizing, bulk SL/Target buttons with qty %, and confirmation gate');
     assert(homeRes.body.includes('/order-window'), 'Dashboard must include pop-out Order Window button');
     console.log('   ✅ GET /order-window serves standalone compact pop-out Order Window.');
 

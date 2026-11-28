@@ -732,13 +732,63 @@ const server = http.createServer(async (req, res) => {
         const splitNote = result.sliced ? ` [Split into ${result.sliceCount} orders, Freeze=${result.freezeQty}]` : '';
         const lmtNote = result.convertedFromMkt ? ` [MKT -> LMT @ ₹${result.price}]` : '';
         const routeNote = result.routingMode === 'all_funded'
-          ? `across ${result.executedCount} funded broker(s)`
-          : 'on selected broker';
+          ? `across ${result.executedCount} checked broker(s)`
+          : 'on checked broker';
         autoExitEngine.log(
           'INFO',
           `Order placed ${routeNote}: ${orderData.transactionType || 'B'} ${orderData.tradingSymbol} x ${result.totalQuantity}${lmtNote}${splitNote}`,
           result
         );
+        return sendJson(res, 200, result);
+      }
+
+      if (pathname === '/api/orders/send-stoploss' && method === 'POST') {
+        const body = await parseBody(req);
+        const result = await multiBrokerManager.sendStopLossForManagedPositions({
+          slPct: body.slPct,
+          accountId: body.accountId || '',
+          scope: body.scope === 'selected' ? 'selected' : 'all_managed',
+          preview: Boolean(body.preview)
+        });
+        if (!result.preview) {
+          for (const item of result.sent) {
+            const key = `${item.accountId}_${item.symbol}_${item.product}`;
+            const existingTs = autoExitEngine.targetStates.get(key);
+            if (existingTs) {
+              existingTs.slOrderIds = item.orderIds && item.orderIds.length > 0
+                ? item.orderIds
+                : (item.orderId ? [item.orderId] : []);
+              existingTs.slTriggerPrice = item.triggerPrice;
+              existingTs.slLimitPrice = item.limitPrice;
+              existingTs.slQty = item.quantity;
+              existingTs.slSource = result.slPct > 0 ? 'PROFIT_SL' : 'LOSS_SL';
+            }
+            autoExitEngine.log(
+              'TRIGGER',
+              `🛡️ Order Window SL (${result.slPct > 0 ? '+' : ''}${result.slPct}%) placed on ${item.brokerName} for ${item.symbol} (${item.quantity} qty): Trig ₹${item.triggerPrice} / Lim ₹${item.limitPrice} (Cap ₹${item.capitalBase})`
+            );
+          }
+        }
+        return sendJson(res, 200, result);
+      }
+
+      if (pathname === '/api/orders/send-target' && method === 'POST') {
+        const body = await parseBody(req);
+        const result = await multiBrokerManager.sendTargetForManagedPositions({
+          targetPct: body.targetPct,
+          qtyPct: body.qtyPct !== undefined ? Number(body.qtyPct) : 100,
+          accountId: body.accountId || '',
+          scope: body.scope === 'selected' ? 'selected' : 'all_managed',
+          preview: Boolean(body.preview)
+        });
+        if (!result.preview) {
+          for (const item of result.sent) {
+            autoExitEngine.log(
+              'TRIGGER',
+              `🎯 Order Window Target Limit (${result.targetPct > 0 ? '+' : ''}${result.targetPct}%) placed on ${item.brokerName} for ${item.symbol} (${item.quantity} qty): Limit ₹${item.limitPrice} (Cap ₹${item.capitalBase}, Charges ₹${item.chargesINR})`
+            );
+          }
+        }
         return sendJson(res, 200, result);
       }
 
@@ -994,7 +1044,7 @@ const server = http.createServer(async (req, res) => {
         const slLogTxt = rs.maxDailyLossNetPct > 0 ? `+${rs.maxDailyLossNetPct}%` : `${rs.maxDailyLossNetPct}%`;
         autoExitEngine.log(
           'INFO',
-          `Updated day order/risk settings: Deploy ${rs.capitalDeployPct}% capital, Net Target +${rs.targetDailyNetProfitPct}% (after charges), SL ${slLogTxt}, Max Orders/Day ${rs.maxDailyOrders > 0 ? rs.maxDailyOrders : 'Unlimited'}, Routing: ${rs.orderRoutingMode === 'all_funded' ? 'All Funded Brokers' : 'Selected Broker'}`
+          `Updated day order/risk settings: Deploy ${rs.capitalDeployPct}% capital, Net Target +${rs.targetDailyNetProfitPct}% (after charges), SL ${slLogTxt}, Max Orders/Day ${rs.maxDailyOrders > 0 ? rs.maxDailyOrders : 'Unlimited'}, Routing: ${rs.orderRoutingMode === 'all_funded' ? 'All Checked Brokers' : 'Checked Broker'}`
         );
         return sendJson(res, 200, {
           success: true,

@@ -32,6 +32,14 @@
     sizingHint: document.getElementById('owSizingHint'),
     buyBtn: document.getElementById('owBuyBtn'),
     sellBtn: document.getElementById('owSellBtn'),
+    slPct: document.getElementById('owSlPct'),
+    slScope: document.getElementById('owSlScope'),
+    sendSlBtn: document.getElementById('owSendSlBtn'),
+    slHint: document.getElementById('owSlHint'),
+    targetPct: document.getElementById('owTargetPct'),
+    targetQtyPct: document.getElementById('owTargetQtyPct'),
+    tgtScope: document.getElementById('owTgtScope'),
+    sendTargetBtn: document.getElementById('owSendTargetBtn'),
     posCount: document.getElementById('owPosCount'),
     netPnlPill: document.getElementById('owNetPnlPill'),
     posList: document.getElementById('owPosList'),
@@ -314,7 +322,7 @@
 
     const opt = els.brokerSelect && els.brokerSelect.options[els.brokerSelect.selectedIndex];
     const brokerLabel = routingMode === 'all_funded'
-      ? 'All Funded Brokers'
+      ? 'All Checked Brokers'
       : ((opt && opt.textContent) || accountId);
 
     if (typeof window.confirmOrderBeforeSend === 'function') {
@@ -516,6 +524,108 @@
 
   els.buyBtn.addEventListener('click', () => submitOrder('B'));
   els.sellBtn.addEventListener('click', () => submitOrder('S'));
+
+  document.querySelectorAll('.ow-sl-preset').forEach(chip => {
+    chip.addEventListener('click', () => {
+      if (els.slPct) els.slPct.value = chip.dataset.sl || '-10';
+    });
+  });
+  document.querySelectorAll('.ow-tgt-preset').forEach(chip => {
+    chip.addEventListener('click', () => {
+      if (els.targetPct) els.targetPct.value = chip.dataset.tgt || '20';
+    });
+  });
+
+  async function dispatchBulkProtectiveOrder(mode) {
+    const isTarget = mode === 'TARGET';
+    const inputEl = isTarget ? els.targetPct : els.slPct;
+    const scopeEl = isTarget ? els.tgtScope : els.slScope;
+    const btnEl = isTarget ? els.sendTargetBtn : els.sendSlBtn;
+    const endpoint = isTarget ? '/api/orders/send-target' : '/api/orders/send-stoploss';
+    const label = isTarget ? 'Target Limit' : 'SL';
+
+    const pct = Number(inputEl ? inputEl.value : 0);
+    if (!Number.isFinite(pct) || pct === 0) {
+      return showToast(`Enter a non-zero ${label} %`, 'error');
+    }
+    const scope = (scopeEl && scopeEl.value === 'selected') ? 'selected' : 'all_managed';
+    const accountId = els.brokerSelect ? els.brokerSelect.value : '';
+    const qtyPct = isTarget ? Number((els.targetQtyPct && els.targetQtyPct.value) || 100) : 100;
+    const bodyBase = isTarget
+      ? { targetPct: pct, qtyPct, accountId, scope }
+      : { slPct: pct, accountId, scope };
+
+    if (btnEl) btnEl.disabled = true;
+    try {
+      const preRes = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...bodyBase, preview: true })
+      });
+      const pre = await preRes.json();
+      if (!pre.success) {
+        return showToast(pre.message || `Failed to compute ${label} prices`, 'error');
+      }
+      const ready = (pre.items || []).filter(it => it.status === 'READY');
+      const skippedList = (pre.items || []).filter(it => it.status !== 'READY');
+      if (ready.length === 0) {
+        const skipReason = skippedList[0] ? skippedList[0].reason : 'No open positions on checked brokers';
+        return showToast(`No ${label} order ready: ${skipReason}`, 'info');
+      }
+
+      const summaryLines = ready.map(it =>
+        isTarget
+          ? `${it.brokerName} ${it.symbol} (${it.quantity}) -> Limit ₹${it.limitPrice}`
+          : `${it.brokerName} ${it.symbol} (${it.quantity}) -> Trig ₹${it.triggerPrice} / Lim ₹${it.limitPrice}`
+      ).join(' | ');
+
+      if (typeof window.confirmOrderBeforeSend === 'function') {
+        const first = ready[0];
+        const confirmed = await window.confirmOrderBeforeSend({
+          title: `Confirm Bulk ${label} (${pct > 0 ? '+' : ''}${pct}%${isTarget ? ` • ${qtyPct}% qty` : ''}) for ${ready.length} Position(s)`,
+          sourceLabel: `Order Window ${label} Button`,
+          brokerLabel: ready.length === 1 ? first.brokerName : `${ready.length} Checked Brokers`,
+          transactionType: first.transactionType,
+          tradingSymbol: ready.length === 1 ? first.symbol : `${ready.length} Positions`,
+          product: first.product,
+          orderType: isTarget ? 'L' : 'SL',
+          quantity: ready.reduce((s, r) => s + Number(r.quantity || 0), 0),
+          triggerPrice: isTarget ? 0 : first.triggerPrice,
+          price: first.limitPrice,
+          ltp: first.ltp,
+          reason: summaryLines + (skippedList.length > 0 ? ` (Skipped ${skippedList.length}: ${skippedList[0].reason})` : '')
+        });
+        if (!confirmed) {
+          return showToast(`Bulk ${label} cancelled before sending to broker`, 'info');
+        }
+      }
+
+      const execRes = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...bodyBase, preview: false })
+      });
+      const exec = await execRes.json();
+      if (exec.success) {
+        const sentCnt = (exec.sent || []).length;
+        const skipCnt = (exec.skipped || []).length;
+        showToast(
+          `Sent ${sentCnt} ${label} order(s)${skipCnt > 0 ? `, skipped ${skipCnt}` : ''}`,
+          sentCnt > 0 ? 'success' : 'info'
+        );
+        loadInitialData();
+      } else {
+        showToast(exec.message || `Failed to send ${label} orders`, 'error');
+      }
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      if (btnEl) btnEl.disabled = false;
+    }
+  }
+
+  if (els.sendSlBtn) els.sendSlBtn.addEventListener('click', () => dispatchBulkProtectiveOrder('SL'));
+  if (els.sendTargetBtn) els.sendTargetBtn.addEventListener('click', () => dispatchBulkProtectiveOrder('TARGET'));
 
   if (els.exitAllBtn) {
     els.exitAllBtn.addEventListener('click', async () => {

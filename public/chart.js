@@ -1687,7 +1687,7 @@ if (C_DOM.chartOrderForm) {
     };
     const chSelOpt = C_DOM.chOrdBroker && C_DOM.chOrdBroker.options[C_DOM.chOrdBroker.selectedIndex];
     const brokerLabel = payload.routingMode === 'all_funded'
-      ? 'All Funded Brokers'
+      ? 'All Checked Brokers'
       : ((chSelOpt && chSelOpt.textContent) || payload.accountId);
 
     if (typeof window.confirmOrderBeforeSend === 'function') {

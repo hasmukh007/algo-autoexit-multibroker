@@ -234,10 +234,10 @@
           <div class="quick-ctrl-group">
             <label for="quickRoutingMode">Place Order On:</label>
             <select id="quickRoutingMode" style="min-width:170px;">
-              <option value="selected" selected>Selected Broker Only</option>
-              <option value="all_funded">All Brokers w/ Funds</option>
+              <option value="selected" selected>Checked Broker Only</option>
+              <option value="all_funded">All Checked Brokers w/ Funds</option>
             </select>
-            <span class="hint-calc" id="quickRoutingHint">Single broker execution</span>
+            <span class="hint-calc" id="quickRoutingHint">Checked broker execution</span>
           </div>
 
           <div class="quick-ctrl-actions">
@@ -485,7 +485,7 @@
           <div class="order-form-card">
             <div class="form-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
               <div>
-                <h2>Execute Order to Selected Broker</h2>
+                <h2>Execute Order to Checked Broker</h2>
                 <p>Routes order to Angel One, Dhan, Kotak Neo, or Sahi. Auto-sizes from broker balance &amp; splits &gt; freeze.</p>
               </div>
               <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
@@ -512,8 +512,8 @@
                 <div class="form-group">
                   <label for="orderRoutingMode">Execution Target</label>
                   <select id="orderRoutingMode">
-                    <option value="selected" selected>Selected Broker Only</option>
-                    <option value="all_funded">All Brokers Having Enough Funds</option>
+                    <option value="selected" selected>Checked Broker Only</option>
+                    <option value="all_funded">All Checked Brokers Having Enough Funds</option>
                   </select>
                 </div>
               </div>

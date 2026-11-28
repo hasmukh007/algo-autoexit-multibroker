@@ -422,8 +422,8 @@ function updateQuickHints() {
   }
   if (DOM.quickRoutingHint) {
     DOM.quickRoutingHint.textContent = routing === 'all_funded'
-      ? 'All brokers w/ enough funds'
-      : 'Selected broker only';
+      ? 'All checked brokers w/ enough funds'
+      : 'Checked broker only';
   }
   if (DOM.orderRoutingMode && DOM.orderRoutingMode.value !== routing) {
     DOM.orderRoutingMode.value = routing;
@@ -1738,7 +1738,7 @@ DOM.applyGlobalRuleBtn.addEventListener('click', async () => {
   const accLabel = accObj ? `${accObj.name} ` : '';
   const slToastTxt = `${stopLossPct > 0 ? '+' : ''}${stopLossPct}%`;
   showToast(
-    `Saved ${accLabel}SL/Target (+${targetPct}% / ${slToastTxt}) & Day Settings: Deploy ${capitalDeployPct}%, Max Orders ${maxDailyOrders || '∞'}, Routing: ${orderRoutingMode === 'all_funded' ? 'All Funded Brokers' : 'Selected Broker'}`,
+    `Saved ${accLabel}SL/Target (+${targetPct}% / ${slToastTxt}) & Day Settings: Deploy ${capitalDeployPct}%, Max Orders ${maxDailyOrders || '∞'}, Routing: ${orderRoutingMode === 'all_funded' ? 'All Checked Brokers' : 'Checked Broker'}`,
     'success'
   );
   loadPositions();
@@ -2561,7 +2561,7 @@ DOM.orderForm.addEventListener('submit', async e => {
 
   const selectedOpt = DOM.orderBrokerSelect && DOM.orderBrokerSelect.options[DOM.orderBrokerSelect.selectedIndex];
   const brokerLabel = routingMode === 'all_funded'
-    ? 'All Funded Brokers'
+    ? 'All Checked Brokers'
     : ((selectedOpt && selectedOpt.textContent) || payload.accountId);
 
   if (typeof window.confirmOrderBeforeSend === 'function') {

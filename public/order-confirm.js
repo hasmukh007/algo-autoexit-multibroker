@@ -154,7 +154,7 @@
       subEl.textContent = details.sourceLabel || 'Review order details — nothing is sent to broker until confirmed';
 
       const rows = [
-        ['Broker / Target', details.brokerLabel || details.routingLabel || details.accountId || 'Selected Broker'],
+        ['Broker / Target', details.brokerLabel || details.routingLabel || details.accountId || 'Checked Broker'],
         ['Side', `<span style="padding:2px 8px;border-radius:4px;font-weight:700;background:${isSell ? 'rgba(239,68,68,0.18)' : 'rgba(16,185,129,0.18)'};color:${isSell ? '#f87171' : '#34d399'};">${sideLabel}</span>`],
         ['Symbol', `<strong>${escapeHtml(details.symbol || details.tradingSymbol || '--')}</strong>`],
         ['Product / Type', `${escapeHtml(details.product || 'MIS')} • ${escapeHtml(ot)}`],

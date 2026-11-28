@@ -803,7 +803,7 @@ OC_DOM.ocOrderForm.addEventListener('submit', async e => {
 
   const ocSelOpt = OC_DOM.ocOrdBroker && OC_DOM.ocOrdBroker.options[OC_DOM.ocOrdBroker.selectedIndex];
   const brokerLabel = routingMode === 'all_funded'
-    ? 'All Funded Brokers'
+    ? 'All Checked Brokers'
     : ((ocSelOpt && ocSelOpt.textContent) || payload.accountId);
 
   if (typeof window.confirmOrderBeforeSend === 'function') {

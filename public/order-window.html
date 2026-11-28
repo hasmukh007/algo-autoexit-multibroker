@@ -399,8 +399,8 @@
         <div class="ow-field">
           <label for="owRoutingMode">Routing</label>
           <select id="owRoutingMode">
-            <option value="selected">Selected Broker</option>
-            <option value="all_funded">All Funded Brokers</option>
+            <option value="selected">Checked Broker Only</option>
+            <option value="all_funded">All Checked Brokers</option>
           </select>
         </div>
       </div>
@@ -511,6 +511,66 @@
       <div class="ow-actions">
         <button type="button" class="ow-btn-buy" id="owBuyBtn">BUY</button>
         <button type="button" class="ow-btn-sell" id="owSellBtn">SELL</button>
+      </div>
+
+      <!-- Bulk SL Controls for Checked Brokers' Positions -->
+      <div style="margin-top:4px; padding-top:8px; border-top:1px solid #1e293b; display:flex; flex-direction:column; gap:6px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+          <span style="font-size:10px; font-weight:700; color:#cbd5e1;">Bulk Stoploss (% of min(Open, Avail))</span>
+          <span class="ow-chips">
+            <button type="button" class="ow-chip ow-sl-preset" data-sl="-10">-10%</button>
+            <button type="button" class="ow-chip ow-sl-preset" data-sl="-5">-5%</button>
+            <button type="button" class="ow-chip ow-sl-preset" data-sl="5">+5%</button>
+            <button type="button" class="ow-chip ow-sl-preset" data-sl="10">+10%</button>
+          </span>
+        </div>
+        <div style="display:grid; grid-template-columns:82px 1fr auto; gap:6px; align-items:center;">
+          <input type="number" id="owSlPct" step="0.5" min="-99" max="500" value="-10" placeholder="-10 / +10"
+            style="padding:6px;background:#020617;border:1px solid #334155;border-radius:6px;color:#f8fafc;font-size:12px;font-family:'JetBrains Mono',monospace;">
+          <select id="owSlScope"
+            style="padding:6px;background:#020617;border:1px solid #334155;border-radius:6px;color:#f8fafc;font-size:11px;">
+            <option value="all_managed" selected>All Checked Brokers</option>
+            <option value="selected">Checked Broker Only</option>
+          </select>
+          <button type="button" id="owSendSlBtn" class="btn-warning"
+            style="padding:7px 10px;border:none;border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;background:#d97706;color:#fff;white-space:nowrap;">
+            Send SL
+          </button>
+        </div>
+        <div class="ow-hint" id="owSlHint">-ve: Buy - %amt | +ve: Buy + charges + %amt (when LTP &gt; SL)</div>
+      </div>
+
+      <!-- Bulk Target Limit Order Controls for Checked Brokers' Positions -->
+      <div style="margin-top:2px; padding-top:8px; border-top:1px solid #1e293b; display:flex; flex-direction:column; gap:6px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+          <span style="font-size:10px; font-weight:700; color:#cbd5e1;">Bulk Target Limit (% of min(Open, Avail))</span>
+          <span class="ow-chips">
+            <button type="button" class="ow-chip ow-tgt-preset" data-tgt="10">+10%</button>
+            <button type="button" class="ow-chip ow-tgt-preset" data-tgt="20">+20%</button>
+            <button type="button" class="ow-chip ow-tgt-preset" data-tgt="30">+30%</button>
+            <button type="button" class="ow-chip ow-tgt-preset" data-tgt="50">+50%</button>
+          </span>
+        </div>
+        <div style="display:grid; grid-template-columns:70px 92px 1fr auto; gap:5px; align-items:center;">
+          <input type="number" id="owTargetPct" step="0.5" min="-99" max="500" value="20" placeholder="20"
+            style="padding:6px;background:#020617;border:1px solid #334155;border-radius:6px;color:#f8fafc;font-size:12px;font-family:'JetBrains Mono',monospace;">
+          <select id="owTargetQtyPct" title="Target Order Quantity %"
+            style="padding:6px;background:#020617;border:1px solid #334155;border-radius:6px;color:#f8fafc;font-size:11px;">
+            <option value="100" selected>100% quantity</option>
+            <option value="50">50% quantity</option>
+            <option value="25">25% quantity</option>
+          </select>
+          <select id="owTgtScope"
+            style="padding:6px;background:#020617;border:1px solid #334155;border-radius:6px;color:#f8fafc;font-size:11px;">
+            <option value="all_managed" selected>All Checked Brokers</option>
+            <option value="selected">Checked Broker Only</option>
+          </select>
+          <button type="button" id="owSendTargetBtn"
+            style="padding:7px 9px;border:none;border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;background:#059669;color:#fff;white-space:nowrap;">
+            Send Target
+          </button>
+        </div>
+        <div class="ow-hint">Cancels pending SL orders &amp; sends Limit (L) @ Buy + charges + %amt</div>
       </div>
     </div>
 

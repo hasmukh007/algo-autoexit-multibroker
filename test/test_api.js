@@ -899,6 +899,128 @@ async function runTests() {
   assert.deepStrictEqual(autoExitTouched, ['acc_managed'], 'AutoExitEngine must exit/manage ONLY checked broker accounts');
   console.log('   ✅ Manage-Orders checkbox gating verified: unchecked broker excluded from manual orders, routing, and Auto-Exit.');
 
+  // 13. Order Window Bulk Stoploss Button (-ve = buyPrice - % of min(open, avail); +ve = buyPrice + charges + % of min(open, avail))
+  console.log('\n13. Testing Order Window Bulk Stoploss for Selected Brokers...');
+  const bulkSlSent = [];
+  const bulkSlMgr = new MultiBrokerManager(
+    {
+      loadConfig: () => ({
+        mode: 'live',
+        chargeSettings: ChargesCalculator.getDefaultChargeSettings(),
+        riskSettings: { autoExitEnabled: true }
+      })
+    },
+    { createAdapter: () => null },
+    null
+  );
+  bulkSlMgr.setOpeningBalanceProvider(() => ({
+    openingBalance: 20000,
+    accounts: [
+      { id: 'acc_sl_m1', availableCash: 15000, totalBalance: 15000 }, // min(15000, available=10000) = 10000
+      { id: 'acc_sl_m2', availableCash: 10000, totalBalance: 10000 }  // min(10000, available=20000) = 10000
+    ]
+  }));
+  bulkSlMgr.getRawAccounts = () => [
+    { id: 'acc_sl_m1', broker: 'kotakneo', name: 'Kotak Managed', enabled: true, manageOrders: true, brokerageType: 'zero', brokeragePerOrder: 0 },
+    { id: 'acc_sl_m2', broker: 'angelone', name: 'Angel Managed', enabled: true, manageOrders: true, brokerageType: 'flat', brokeragePerOrder: 20 },
+    { id: 'acc_sl_u3', broker: 'dhan', name: 'Dhan Unchecked', enabled: true, manageOrders: false }
+  ];
+  let bulkLtp = 100;
+  const makeBulkInst = (id, broker, avail) => ({
+    id,
+    broker,
+    name: id,
+    isMock: false,
+    isAuthenticated: true,
+    async getFunds() { return { availableCash: 0, utilizedMargin: avail, totalBalance: avail }; },
+    async getPositions() {
+      return [{
+        accountId: id,
+        broker,
+        brokerName: id,
+        symbol: 'NIFTY01DEC26C25000',
+        exchangeSegment: 'nse_fo',
+        product: 'MIS',
+        netQty: 100,
+        buyQty: 100,
+        buyAvg: 100,
+        ltp: bulkLtp,
+        isOpen: true
+      }];
+    },
+    async getOrderBook() { return []; },
+    async placeOrder(ord) {
+      bulkSlSent.push({ id, ...ord });
+      return { success: true, orderId: `BSL-${id}-${bulkSlSent.length}` };
+    }
+  });
+  bulkSlMgr.brokerInstances.set('acc_sl_m1', makeBulkInst('acc_sl_m1', 'kotakneo', 10000)); // min(15000,10000) = 10000
+  bulkSlMgr.brokerInstances.set('acc_sl_m2', makeBulkInst('acc_sl_m2', 'angelone', 20000)); // min(10000,20000) = 10000
+  bulkSlMgr.brokerInstances.set('acc_sl_u3', makeBulkInst('acc_sl_u3', 'dhan', 50000));     // unchecked -> MUST be ignored!
+
+  // Case 13A: Negative SL (-10%) -> buyingPrice (100) - 10% of min(open, avail) (1000/100 = 10) = 90.00 trigger / 89.50 limit
+  bulkLtp = 100;
+  const negBulkRes = await bulkSlMgr.sendStopLossForManagedPositions({ slPct: -10, scope: 'all_managed', preview: false });
+  assert.strictEqual(negBulkRes.sent.length, 2, 'Must send SL for both checked brokers only (ignoring unchecked Dhan)');
+  assert(bulkSlSent.every(o => o.id !== 'acc_sl_u3'), 'Unchecked broker must NOT receive SL order');
+  assert.strictEqual(negBulkRes.sent[0].capitalBase, 10000);
+  assert.strictEqual(negBulkRes.sent[0].triggerPrice, 90);
+  assert.strictEqual(negBulkRes.sent[0].limitPrice, 89.5);
+  assert.strictEqual(negBulkRes.sent[1].capitalBase, 10000);
+  assert.strictEqual(negBulkRes.sent[1].triggerPrice, 90);
+
+  // Case 13B: Positive SL (+10%) while LTP = 105 (below +10% SL) -> skipped cleanly
+  bulkSlSent.length = 0;
+  bulkLtp = 105;
+  const posSkipRes = await bulkSlMgr.sendStopLossForManagedPositions({ slPct: 10, scope: 'all_managed', preview: false });
+  assert.strictEqual(posSkipRes.sent.length, 0);
+  assert.strictEqual(posSkipRes.skipped.length, 2, 'Must skip +10% SL when LTP (105) is below trigger');
+
+  // Case 13C: Positive SL (+10%) while LTP = 115 (> trigger) -> sends SL at buyingPrice + charges + 10% of min(open, avail)
+  bulkLtp = 115;
+  const posSendRes = await bulkSlMgr.sendStopLossForManagedPositions({ slPct: 10, scope: 'all_managed', preview: false });
+  assert.strictEqual(posSendRes.sent.length, 2);
+  // Zero-brokerage Kotak: charges ~ ₹26.3 => trigger ~ 110.25; ₹20/ord Angel: charges ~ ₹73.5 => trigger ~ 110.75
+  assert(posSendRes.sent[0].triggerPrice >= 110.2 && posSendRes.sent[0].triggerPrice <= 110.35, `Expected Kotak +10% SL ~110.25, got ${posSendRes.sent[0].triggerPrice}`);
+  assert(posSendRes.sent[1].triggerPrice >= 110.7 && posSendRes.sent[1].triggerPrice <= 110.85, `Expected Angel +10% SL ~110.75, got ${posSendRes.sent[1].triggerPrice}`);
+  assert(posSendRes.sent[1].chargesINR > posSendRes.sent[0].chargesINR, 'Broker with ₹20/ord brokerage must include higher charges than ₹0/ord');
+  console.log(`   ✅ Order Window Bulk SL verified: -10% @ ₹${negBulkRes.sent[0].triggerPrice}, +10% Kotak @ ₹${posSendRes.sent[0].triggerPrice} / Angel @ ₹${posSendRes.sent[1].triggerPrice}.`);
+
+  // Case 13D: Order Window Bulk Target Limit Order (+10%) -> sends Limit ('L') order at buyingPrice + charges + 10% of min(open, avail) even when LTP (100) < Target (110+)!
+  bulkSlSent.length = 0;
+  bulkLtp = 100;
+  const tgtRes = await bulkSlMgr.sendTargetForManagedPositions({ targetPct: 10, qtyPct: 100, scope: 'all_managed', preview: false });
+  assert.strictEqual(tgtRes.sent.length, 2, 'Target Limit must send for both checked brokers even when LTP < Target');
+  assert.strictEqual(tgtRes.sent[0].orderType, 'L');
+  assert.strictEqual(tgtRes.sent[0].triggerPrice, 0, 'Target Limit order must have triggerPrice = 0');
+  assert.strictEqual(tgtRes.sent[0].quantity, 100);
+  assert(tgtRes.sent[0].limitPrice >= 110.2 && tgtRes.sent[0].limitPrice <= 110.35, `Expected Kotak +10% Target Limit ~110.25, got ${tgtRes.sent[0].limitPrice}`);
+  assert(tgtRes.sent[1].limitPrice >= 110.7 && tgtRes.sent[1].limitPrice <= 110.85, `Expected Angel +10% Target Limit ~110.75, got ${tgtRes.sent[1].limitPrice}`);
+  assert.strictEqual(bulkSlSent[0].orderType, 'L');
+  assert.strictEqual(bulkSlSent[0].triggerPrice, 0);
+  assert.strictEqual(bulkSlSent[1].orderType, 'L');
+
+  // Case 13E: Partial Target Limit Order quantities (50% quantity & 25% quantity with lot ceiling, e.g. 325 = 5 lots -> ceil(5/2)=3 -> 195)
+  bulkSlSent.length = 0;
+  const tgt50Res = await bulkSlMgr.sendTargetForManagedPositions({ targetPct: 10, qtyPct: 50, scope: 'all_managed', preview: false });
+  assert.strictEqual(tgt50Res.sent[0].quantity, 50, '50% quantity target must send 50 of 100 qty');
+  assert.strictEqual(tgt50Res.sent[0].limitPrice, tgtRes.sent[0].limitPrice, 'Partial target must keep exact target price level');
+  const tgt25Res = await bulkSlMgr.sendTargetForManagedPositions({ targetPct: 10, qtyPct: 25, scope: 'all_managed', preview: false });
+  assert.strictEqual(tgt25Res.sent[0].quantity, 25, '25% quantity target must send 25 of 100 qty');
+
+  // Verify exact 325 qty (5 lots of 65): 50% -> ceil(5/2) = 3 lots = 195; 25% -> ceil(5/4) = 2 lots = 130
+  const lot5Inst = bulkSlMgr.brokerInstances.get('acc_sl_m1');
+  const origGetPos = lot5Inst.getPositions.bind(lot5Inst);
+  lot5Inst.getPositions = async () => {
+    const rows = await origGetPos();
+    return [{ ...rows[0], netQty: 325, buyQty: 325 }];
+  };
+  const tgt325_50 = await bulkSlMgr.sendTargetForManagedPositions({ targetPct: 10, qtyPct: 50, accountId: 'acc_sl_m1', scope: 'selected', preview: true });
+  assert.strictEqual(tgt325_50.items[0].quantity, 195, '325 qty (5 lots) at 50% must ceil to 3 lots = 195');
+  const tgt325_25 = await bulkSlMgr.sendTargetForManagedPositions({ targetPct: 10, qtyPct: 25, accountId: 'acc_sl_m1', scope: 'selected', preview: true });
+  assert.strictEqual(tgt325_25.items[0].quantity, 130, '325 qty (5 lots) at 25% must ceil to 2 lots = 130');
+  console.log(`   ✅ Order Window Bulk Target Limit verified: LMT Kotak @ ₹${tgtRes.sent[0].limitPrice} / Angel @ ₹${tgtRes.sent[1].limitPrice} (325 -> 50%:${tgt325_50.items[0].quantity}, 25%:${tgt325_25.items[0].quantity}).`);
+
   scheduler.stopScheduler();
   mgr.mockManager.stopSimulation();
   if (typeof mgr.disconnectAll === 'function') mgr.disconnectAll();
