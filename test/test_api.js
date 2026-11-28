@@ -1548,6 +1548,94 @@ async function runTests() {
   if (fs.existsSync(obStatePath)) fs.unlinkSync(obStatePath);
   console.log('   ✅ Immediate Paper Order Book & orders_changed event updates verified.');
 
+  console.log('\n🧪 Test 22: Profit Target Price Includes Charges & Brokerage So Net Profit Matches Target %...');
+  // 22A: Bulk Target preview on ₹1,00,000 capital aiming for +10% Net Profit (₹10,000) with ₹20/ord brokerage & charges
+  const tgtNetMgr = new MultiBrokerManager(
+    {
+      loadConfig: () => ({
+        mode: 'live',
+        chargeSettings: ChargesCalculator.getDefaultChargeSettings(),
+        riskSettings: {}
+      })
+    },
+    { createAdapter: () => null },
+    null
+  );
+  tgtNetMgr.getRawAccounts = () => [
+    { id: 'acc_tgt_zero', broker: 'kotakneo', name: 'Kotak Zero', enabled: true, manageOrders: true, brokerageType: 'zero', brokeragePerOrder: 0 },
+    { id: 'acc_tgt_flat', broker: 'angelone', name: 'Angel Flat20', enabled: true, manageOrders: true, brokerageType: 'flat', brokeragePerOrder: 20 }
+  ];
+  tgtNetMgr.setOpeningBalanceProvider(() => ({
+    openingBalance: 200000,
+    isAutoCaptured: true,
+    accounts: [
+      { id: 'acc_tgt_zero', availableCash: 100000, totalBalance: 100000 },
+      { id: 'acc_tgt_flat', availableCash: 100000, totalBalance: 100000 }
+    ]
+  }));
+  ['acc_tgt_zero', 'acc_tgt_flat'].forEach(accId => {
+    const isZero = accId === 'acc_tgt_zero';
+    tgtNetMgr.brokerInstances.set(accId, {
+      id: accId,
+      broker: isZero ? 'kotakneo' : 'angelone',
+      name: isZero ? 'Kotak Zero' : 'Angel Flat20',
+      isAuthenticated: true,
+      async getFunds() { return { availableCash: 100000, utilizedMargin: 0, totalBalance: 100000 }; },
+      async getPositions() {
+        return [{ accountId: accId, broker: this.broker, brokerName: this.name, symbol: 'NIFTY28MAR2625000CE', product: 'MIS', netQty: 650, buyQty: 650, buyAvg: 100, ltp: 100, isOpen: true }];
+      },
+      async getOrderBook() { return []; }
+    });
+  });
+
+  const tgtNetRes = await tgtNetMgr.sendTargetForManagedPositions({ targetPct: 10, qtyPct: 100, scope: 'all_managed', preview: true });
+  assert.strictEqual(tgtNetRes.items.length, 2);
+  for (const item of tgtNetRes.items) {
+    assert(item.expectedNetProfitINR >= 10000, `Net profit ₹${item.expectedNetProfitINR} at target ₹${item.limitPrice} must >= ₹10,000 (10%)`);
+    assert(item.expectedNetProfitPct >= 10, `Net profit % ${item.expectedNetProfitPct}% at target ₹${item.limitPrice} must match >= 10%`);
+    // Verify independently via ChargesCalculator at item.limitPrice
+    const grossAtTarget = (item.limitPrice - 100) * 650;
+    const chgCheck = ChargesCalculator.calculatePositionCharges(
+      { symbol: item.symbol, product: 'MIS', buyQty: 650, sellQty: 650, buyAvg: 100, sellAvg: item.limitPrice, netQty: 0, ltp: item.limitPrice, totalPnl: grossAtTarget },
+      tgtNetMgr.getAccountBrokerage(item.accountId, item.broker),
+      ChargesCalculator.getDefaultChargeSettings(),
+      [
+        { orderId: 'B1', symbol: item.symbol, transactionType: 'B', quantity: 650, filledQuantity: 650, price: 100, status: 'COMPLETE' },
+        { orderId: 'S1', symbol: item.symbol, transactionType: 'S', quantity: 650, filledQuantity: 650, price: item.limitPrice, status: 'COMPLETE' }
+      ]
+    );
+    assert(chgCheck.netPnl >= 10000 && chgCheck.netPnl < 10060, `Actual Net P&L at target limit ₹${item.limitPrice} must match ~10% (got ₹${chgCheck.netPnl})`);
+  }
+  assert(tgtNetRes.items[1].limitPrice > tgtNetRes.items[0].limitPrice, '₹20/ord flat brokerage target price must exceed ₹0/ord target price');
+
+  // 22B: AutoExitEngine staged fullTargetPrice also solves charges & brokerage at target exit price
+  const aeTgtEngine = new AutoExitEngine(
+    {
+      mockManager: { updateLtpsFromRealFeed() {} },
+      getAccountBrokerage: () => ({ brokerageType: 'flat', brokeragePerOrder: 20 }),
+      getExecutedOrders: () => [{ orderId: 'B-AE', symbol: 'NIFTY28MAR2625000CE', transactionType: 'B', quantity: 130, filledQuantity: 130, price: 100, status: 'COMPLETE' }],
+      getAccountRiskSettings: () => ({ targetNetProfitPct: 2, stopLossNetPct: 0, nearThresholdBufferPct: 100 }),
+      async getAllPositions() {
+        return [{ accountId: 'acc_ae_t', broker: 'angelone', symbol: 'NIFTY28MAR2625000CE', product: 'MIS', netQty: 130, buyQty: 130, buyAvg: 100, ltp: 102, isOpen: true }];
+      },
+      async getAllFunds() { return { perAccount: { acc_ae_t: { availableCash: 100000, totalBalance: 100000 } } }; }
+    },
+    { getOpeningBalanceData: () => ({ openingBalance: 100000, accounts: [{ id: 'acc_ae_t', availableCash: 100000, totalBalance: 100000 }] }) },
+    { loadConfig: () => ({ chargeSettings: ChargesCalculator.getDefaultChargeSettings(), riskSettings: { autoExitEnabled: true } }) }
+  );
+  aeTgtEngine.allowQuietHoursEval = true;
+  await aeTgtEngine._evaluatePositions();
+  const aeTs = aeTgtEngine.getAllTargetStates()['acc_ae_t_NIFTY28MAR2625000CE_MIS'];
+  const fullGross = (aeTs.fullTargetPrice - 100) * 130;
+  const fullCheck = ChargesCalculator.calculatePositionCharges(
+    { symbol: 'NIFTY28MAR2625000CE', buyQty: 130, sellQty: 130, buyAvg: 100, sellAvg: aeTs.fullTargetPrice, netQty: 0, ltp: aeTs.fullTargetPrice, totalPnl: fullGross },
+    { brokerageType: 'flat', brokeragePerOrder: 20 },
+    ChargesCalculator.getDefaultChargeSettings(),
+    null
+  );
+  assert(fullCheck.netPnl >= 2000 && fullCheck.netPnl < 2015, `AutoExit fullTargetPrice ₹${aeTs.fullTargetPrice} must yield Net P&L >= ₹2,000 (+2%) after charges (got ₹${fullCheck.netPnl})`);
+  console.log(`   ✅ Profit Target prices include charges & brokerage: ZeroBrk ₹${tgtNetRes.items[0].limitPrice}, Flat20 ₹${tgtNetRes.items[1].limitPrice}, AutoExit +2% ₹${aeTs.fullTargetPrice} (Net ₹${fullCheck.netPnl}).`);
+
   scheduler.stopScheduler();
   mgr.mockManager.stopSimulation();
   if (typeof mgr.disconnectAll === 'function') mgr.disconnectAll();

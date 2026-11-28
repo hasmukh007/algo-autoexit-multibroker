@@ -575,7 +575,7 @@
 
       const summaryLines = ready.map(it =>
         isTarget
-          ? `${it.brokerName} ${it.symbol} (${it.quantity}) -> Limit ₹${it.limitPrice}`
+          ? `${it.brokerName} ${it.symbol} (${it.quantity}) -> Limit ₹${it.limitPrice} (Net ${it.expectedNetProfitPct !== undefined ? `${it.expectedNetProfitPct}%` : `${pct}%`} / Chg ₹${it.chargesINR || 0})`
           : `${it.brokerName} ${it.symbol} (${it.quantity}) -> Trig ₹${it.triggerPrice} / Lim ₹${it.limitPrice}`
       ).join(' | ');
 
