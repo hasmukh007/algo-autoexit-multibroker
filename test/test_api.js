@@ -748,6 +748,157 @@ async function runTests() {
   assert(slTimeline.some(e => e.op === 'exit'), 'Negative SL must exit on loss when threshold is breached');
   console.log(`   ✅ Signed SL verified: -10% SL (${negSlPlace.triggerPrice}/${negSlPlace.price}) -> cancelled before Target (${stage1Idx > cancelIdx}) -> +10% Profit SL (${posSlPlace.triggerPrice}/${posSlPlace.price}) -> loss breach exit.`);
 
+  // 11. Market Order -> Limit Order at Current Live Price (LTP)
+  console.log('\n11. Testing Market Order -> Limit Order at Current Price (LTP)...');
+  const sentToBroker = [];
+  const mktToLmtMgr = new MultiBrokerManager(
+    { loadConfig: () => ({ mode: 'live', accounts: [] }) },
+    { createAdapter: () => null },
+    null
+  );
+  mktToLmtMgr.brokerInstances.set('acc_lmt', {
+    id: 'acc_lmt',
+    broker: 'kotakneo',
+    isMock: false,
+    isAuthenticated: true,
+    async getFunds() { return { availableCash: 100000, utilizedMargin: 0, totalBalance: 100000 }; },
+    async placeOrder(ord) {
+      sentToBroker.push(ord);
+      return { success: true, orderId: `ORD-LMT-${sentToBroker.length}` };
+    }
+  });
+
+  const mktPlaceRes = await mktToLmtMgr.placeOrder({
+    accountId: 'acc_lmt',
+    tradingSymbol: 'NIFTY01DEC26C25000',
+    exchangeSegment: 'nse_fo',
+    transactionType: 'B',
+    orderType: 'MKT',
+    quantity: 65,
+    price: 0,
+    ltp: 142.33
+  });
+  assert.strictEqual(mktPlaceRes.convertedFromMkt, true);
+  assert.strictEqual(sentToBroker.length, 1);
+  assert.strictEqual(sentToBroker[0].orderType, 'L', 'MKT order with live LTP must be dispatched as Limit (L)');
+  assert.strictEqual(sentToBroker[0].price, 142.35, 'Limit price must match current price rounded to 0.05 tick');
+
+  await mktToLmtMgr.exitPosition({
+    accountId: 'acc_lmt',
+    broker: 'kotakneo',
+    symbol: 'NIFTY01DEC26C25000',
+    exchangeSegment: 'nse_fo',
+    product: 'MIS',
+    netQty: 65,
+    ltp: 118.42
+  }, 'Exit at LTP Limit');
+  assert.strictEqual(sentToBroker.length, 2);
+  assert.strictEqual(sentToBroker[1].orderType, 'L', 'exitPosition must convert MKT exit to Limit (L) at position LTP');
+  assert.strictEqual(sentToBroker[1].price, 118.4);
+  console.log(`   ✅ MKT->LMT conversion verified: entry LMT @ ₹${sentToBroker[0].price}, exit LMT @ ₹${sentToBroker[1].price}.`);
+
+  // 12. Manage-Orders Checkbox Gating (Only Selected Brokers Manage Orders)
+  console.log('\n12. Testing Manage-Orders Checkbox Gating Across MultiBrokerManager & AutoExitEngine...');
+  const rawAccList = [
+    { id: 'acc_managed', broker: 'kotakneo', name: 'Managed Broker', enabled: true, manageOrders: true },
+    { id: 'acc_viewonly', broker: 'angelone', name: 'View-Only Broker', enabled: true, manageOrders: false }
+  ];
+  const gatedBrokerOrders = [];
+  const manageMgr = new MultiBrokerManager(
+    { loadConfig: () => ({ mode: 'live', accounts: [] }) },
+    { createAdapter: () => null },
+    null
+  );
+  manageMgr.getRawAccounts = () => rawAccList;
+  manageMgr.brokerInstances.set('acc_managed', {
+    id: 'acc_managed',
+    broker: 'kotakneo',
+    name: 'Managed Broker',
+    isMock: false,
+    isAuthenticated: true,
+    async getFunds() { return { availableCash: 100000, utilizedMargin: 0, totalBalance: 100000 }; },
+    async placeOrder(ord) {
+      gatedBrokerOrders.push({ acc: 'acc_managed', ...ord });
+      return { success: true, orderId: 'MGD-1' };
+    }
+  });
+  manageMgr.brokerInstances.set('acc_viewonly', {
+    id: 'acc_viewonly',
+    broker: 'angelone',
+    name: 'View-Only Broker',
+    isMock: false,
+    isAuthenticated: true,
+    async getFunds() { return { availableCash: 100000, utilizedMargin: 0, totalBalance: 100000 }; },
+    async placeOrder(ord) {
+      gatedBrokerOrders.push({ acc: 'acc_viewonly', ...ord });
+      return { success: true, orderId: 'VW-1' };
+    }
+  });
+
+  // Direct placeOrder on unchecked account must throw
+  let blockedViewOnly = false;
+  try {
+    await manageMgr.placeOrder({
+      accountId: 'acc_viewonly',
+      tradingSymbol: 'NIFTY01DEC26C25000',
+      exchangeSegment: 'nse_fo',
+      transactionType: 'B',
+      orderType: 'L',
+      quantity: 65,
+      price: 100
+    });
+  } catch (e) {
+    blockedViewOnly = String(e.message || '').includes('Order management is disabled');
+  }
+  assert.strictEqual(blockedViewOnly, true, 'Unchecked broker must be rejected for order placement');
+
+  // all_funded routing must send ONLY to checked broker
+  const allFundedRes = await manageMgr.placeOrder({
+    routingMode: 'all_funded',
+    tradingSymbol: 'NIFTY01DEC26C25000',
+    exchangeSegment: 'nse_fo',
+    transactionType: 'B',
+    orderType: 'L',
+    quantity: 65,
+    price: 100
+  });
+  assert.strictEqual(allFundedRes.executedCount, 1, 'Only 1 checked broker should receive routed order');
+  assert.strictEqual(gatedBrokerOrders.length, 1);
+  assert.strictEqual(gatedBrokerOrders[0].acc, 'acc_managed');
+
+  // AutoExitEngine must touch ONLY checked account positions
+  const autoExitTouched = [];
+  const managedAutoEngine = new AutoExitEngine(
+    {
+      mockManager: { updateLtpsFromRealFeed() {} },
+      isAccountOrderManaged: id => manageMgr.isAccountOrderManaged(id),
+      getAccountBrokerage() { return { brokerageType: 'zero', brokeragePerOrder: 0 }; },
+      getExecutedOrders() { return []; },
+      getPositionLotSize() { return 65; },
+      getAccountRiskSettings() { return { targetNetProfitPct: 10, stopLossNetPct: -10, nearThresholdBufferPct: 100 }; },
+      async getAllPositions() {
+        return [
+          { accountId: 'acc_managed', broker: 'kotakneo', brokerName: 'Managed', symbol: 'NIFTY01DEC26C25000', product: 'MIS', netQty: 65, buyQty: 65, buyAvg: 100, ltp: 117, totalPnl: 1105, isOpen: true },
+          { accountId: 'acc_viewonly', broker: 'angelone', brokerName: 'ViewOnly', symbol: 'NIFTY01DEC26P25000', product: 'MIS', netQty: 65, buyQty: 65, buyAvg: 100, ltp: 117, totalPnl: 1105, isOpen: true }
+        ];
+      },
+      async placeOrder(ord) {
+        autoExitTouched.push(ord.accountId);
+        return { success: true, orderId: 'AE-ORD-' + ord.accountId };
+      },
+      async exitPosition(pos) {
+        autoExitTouched.push(pos.accountId);
+        return { success: true, orderId: 'AE-' + pos.accountId };
+      }
+    },
+    { getOpeningBalanceData: () => ({ openingBalance: 10000, accounts: [{ id: 'acc_managed', totalBalance: 10000 }, { id: 'acc_viewonly', totalBalance: 10000 }] }) },
+    { loadConfig: () => ({ chargeSettings: ChargesCalculator.getDefaultChargeSettings(), riskSettings: { autoExitEnabled: true } }) }
+  );
+  managedAutoEngine.allowQuietHoursEval = true;
+  await managedAutoEngine._evaluatePositions();
+  assert.deepStrictEqual(autoExitTouched, ['acc_managed'], 'AutoExitEngine must exit/manage ONLY checked broker accounts');
+  console.log('   ✅ Manage-Orders checkbox gating verified: unchecked broker excluded from manual orders, routing, and Auto-Exit.');
+
   scheduler.stopScheduler();
   mgr.mockManager.stopSimulation();
   if (typeof mgr.disconnectAll === 'function') mgr.disconnectAll();

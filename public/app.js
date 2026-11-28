@@ -762,10 +762,11 @@ function updateBrokerSelect() {
   let storedId = '';
   try { storedId = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
   const prevSelected = DOM.orderBrokerSelect.value || state.selectedBrokerAccountId || storedId;
-  const sig = state.accounts.map(acc => `${acc.id}:${acc.name}:${acc.broker}:${acc.clientCode || ''}`).join('|');
+  const orderAccounts = (state.accounts || []).filter(acc => acc.enabled && acc.manageOrders !== false);
+  const sig = orderAccounts.map(acc => `${acc.id}:${acc.name}:${acc.broker}:${acc.clientCode || ''}:${acc.manageOrders !== false ? 1 : 0}`).join('|');
 
   if (DOM.orderBrokerSelect.options.length > 0 && state.brokerSelectSignature === sig) {
-    if (prevSelected && state.accounts.some(acc => acc.id === prevSelected) && DOM.orderBrokerSelect.value !== prevSelected) {
+    if (prevSelected && orderAccounts.some(acc => acc.id === prevSelected) && DOM.orderBrokerSelect.value !== prevSelected) {
       DOM.orderBrokerSelect.value = prevSelected;
     }
     return;
@@ -773,14 +774,21 @@ function updateBrokerSelect() {
   state.brokerSelectSignature = sig;
 
   DOM.orderBrokerSelect.innerHTML = '';
-  state.accounts.forEach(acc => {
+  if (orderAccounts.length === 0) {
     const opt = document.createElement('option');
-    opt.value = acc.id;
-    opt.textContent = `${acc.name} (${acc.broker.toUpperCase()}) - ${acc.clientCode || 'Active'}`;
+    opt.value = '';
+    opt.textContent = 'No broker checked for order management';
     DOM.orderBrokerSelect.appendChild(opt);
-  });
+  } else {
+    orderAccounts.forEach(acc => {
+      const opt = document.createElement('option');
+      opt.value = acc.id;
+      opt.textContent = `${acc.name} (${acc.broker.toUpperCase()}) - ${acc.clientCode || 'Active'}`;
+      DOM.orderBrokerSelect.appendChild(opt);
+    });
+  }
 
-  if (prevSelected && state.accounts.some(acc => acc.id === prevSelected)) {
+  if (prevSelected && orderAccounts.some(acc => acc.id === prevSelected)) {
     DOM.orderBrokerSelect.value = prevSelected;
   }
   state.selectedBrokerAccountId = DOM.orderBrokerSelect.value || '';
@@ -1240,16 +1248,21 @@ function renderOrdersTable() {
 }
 
 function renderAccountsTable() {
-  DOM.accountsBtnText.textContent = `Brokers (${state.accounts.filter(a => a.enabled).length} Active)`;
+  const activeAccounts = (state.accounts || []).filter(a => a.enabled);
+  const managedAccounts = activeAccounts.filter(a => a.manageOrders !== false);
+  DOM.accountsBtnText.textContent = managedAccounts.length === activeAccounts.length
+    ? `Brokers (${activeAccounts.length} Active)`
+    : `Brokers (${managedAccounts.length}/${activeAccounts.length} Orders)`;
 
   if (!state.accounts || state.accounts.length === 0) {
-    DOM.accountsTableBody.innerHTML = `<tr><td colspan="8" class="empty-state">No broker accounts configured.</td></tr>`;
+    DOM.accountsTableBody.innerHTML = `<tr><td colspan="9" class="empty-state">No broker accounts configured.</td></tr>`;
     return;
   }
 
   let html = '';
   state.accounts.forEach(acc => {
     const bClass = getBrokerBadgeClass(acc.broker);
+    const isManaged = acc.manageOrders !== false;
     const brkLabel = acc.brokerageType === 'zero' || acc.brokeragePerOrder === 0
       ? '₹0/order'
       : `₹${acc.brokeragePerOrder ?? 20}/order`;
@@ -1264,6 +1277,12 @@ function renderAccountsTable() {
 
     html += `
       <tr>
+        <td>
+          <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;" title="Check to allow placing & managing orders on this broker from this system">
+            <input type="checkbox" class="acc-manage-orders-chk" data-id="${acc.id}" ${isManaged ? 'checked' : ''} style="width:15px; height:15px; cursor:pointer; accent-color:var(--accent-color, #38bdf8);">
+            <span style="font-size:11px; font-weight:600; color:${isManaged ? 'var(--profit-color)' : 'var(--text-muted)'};">${isManaged ? 'Yes' : 'No'}</span>
+          </label>
+        </td>
         <td><span class="badge ${bClass}">${acc.broker.toUpperCase()}</span></td>
         <td><strong>${acc.name}</strong></td>
         <td class="mono">${acc.clientCode || 'Configured'}</td>
@@ -1288,6 +1307,41 @@ function renderAccountsTable() {
     `;
   });
   DOM.accountsTableBody.innerHTML = html;
+
+  document.querySelectorAll('.acc-manage-orders-chk').forEach(chk => {
+    chk.addEventListener('change', async () => {
+      const id = chk.getAttribute('data-id');
+      const manageOrders = Boolean(chk.checked);
+      chk.disabled = true;
+      try {
+        const res = await fetch(`/api/accounts/${id}/manage-orders`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ manageOrders })
+        });
+        const d = await res.json();
+        if (d.success && Array.isArray(d.accounts)) {
+          state.accounts = d.accounts;
+          renderAccountsTable();
+          updateBrokerSelect();
+          updateQuickRiskAccountSelect();
+          const accObj = state.accounts.find(a => a.id === id);
+          showToast(
+            `${accObj ? accObj.name : id}: Order management ${manageOrders ? 'enabled' : 'disabled (not managed)'}`,
+            manageOrders ? 'success' : 'info'
+          );
+        } else {
+          chk.checked = !manageOrders;
+          showToast((d && d.message) || 'Failed to update setting', 'error');
+        }
+      } catch (e) {
+        chk.checked = !manageOrders;
+        showToast(e.message, 'error');
+      } finally {
+        chk.disabled = false;
+      }
+    });
+  });
 
   document.querySelectorAll('.edit-acc-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -2485,6 +2539,8 @@ DOM.orderForm.addEventListener('submit', async e => {
 
   const routingMode = (DOM.orderRoutingMode && DOM.orderRoutingMode.value) || (DOM.quickRoutingMode && DOM.quickRoutingMode.value) || 'selected';
   const allocationPct = DOM.quickCapitalDeployPct ? Number(DOM.quickCapitalDeployPct.value || 100) : undefined;
+  const liveLtpVal = Number(orderUiState.liveLtp || 0);
+  const mktAsLimitPx = ot === 'MKT' && liveLtpVal > 0 ? roundToTick(liveLtpVal) : 0;
   const payload = {
     accountId: DOM.orderBrokerSelect.value,
     routingMode,
@@ -2494,12 +2550,12 @@ DOM.orderForm.addEventListener('submit', async e => {
     exchangeSegment: DOM.orderSegment.value,
     transactionType: side,
     product: DOM.orderProduct.value,
-    orderType: ot,
+    orderType: mktAsLimitPx > 0 ? 'L' : ot,
     quantity: qtyVal,
     autoQuantity: Boolean(DOM.orderAutoQty && DOM.orderAutoQty.checked),
-    price: ot === 'MKT' ? 0 : enteredPrice,
+    price: ot === 'MKT' ? mktAsLimitPx : enteredPrice,
     triggerPrice: ot === 'SL' ? triggerPrice : 0,
-    ltp: Number(orderUiState.liveLtp || enteredPrice || 0),
+    ltp: Number(liveLtpVal || enteredPrice || 0),
     userConfirmed: true
   };
 

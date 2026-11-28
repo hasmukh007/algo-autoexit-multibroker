@@ -1343,15 +1343,23 @@ async function loadChartOrderAccounts() {
       let storedBroker = '';
       try { storedBroker = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
       const prev = C_DOM.chOrdBroker.value || storedBroker;
+      const managedAccounts = d.data.filter(acc => acc.enabled && acc.manageOrders !== false);
       C_DOM.chOrdBroker.innerHTML = '';
-      d.data.forEach(acc => {
+      if (managedAccounts.length === 0) {
         const opt = document.createElement('option');
-        opt.value = acc.id;
-        opt.textContent = `${acc.name} (${acc.broker.toUpperCase()})`;
+        opt.value = '';
+        opt.textContent = 'No broker checked for orders';
         C_DOM.chOrdBroker.appendChild(opt);
-      });
-      if (prev && d.data.some(a => a.id === prev)) {
-        C_DOM.chOrdBroker.value = prev;
+      } else {
+        managedAccounts.forEach(acc => {
+          const opt = document.createElement('option');
+          opt.value = acc.id;
+          opt.textContent = `${acc.name} (${acc.broker.toUpperCase()})`;
+          C_DOM.chOrdBroker.appendChild(opt);
+        });
+        if (prev && managedAccounts.some(a => a.id === prev)) {
+          C_DOM.chOrdBroker.value = prev;
+        }
       }
     }
   } catch (e) {}
@@ -1657,6 +1665,8 @@ if (C_DOM.chartOrderForm) {
   C_DOM.chartOrderForm.addEventListener('submit', async e => {
     e.preventDefault();
     const ot = C_DOM.chOrdType.value;
+    const chLtp = Number(chartOrderState.ltp || 0);
+    const chMktLimitPx = ot === 'MKT' && chLtp > 0 ? Number((Math.round(chLtp / 0.05) * 0.05).toFixed(2)) : 0;
     const payload = {
       accountId: C_DOM.chOrdBroker.value,
       routingMode: (C_DOM.chOrdRoutingMode && C_DOM.chOrdRoutingMode.value) || 'selected',
@@ -1665,12 +1675,12 @@ if (C_DOM.chartOrderForm) {
       exchangeSegment: 'nse_fo',
       transactionType: C_DOM.chOrdSide.value,
       product: C_DOM.chOrdProduct.value,
-      orderType: ot,
+      orderType: chMktLimitPx > 0 ? 'L' : ot,
       quantity: Number(C_DOM.chOrdQty.value),
       autoQuantity: Boolean(C_DOM.chAutoQty && C_DOM.chAutoQty.checked),
       lotSize: chartOrderState.lotSize,
       freezeQty: chartOrderState.freezeQty,
-      price: ot === 'MKT' ? 0 : Number(C_DOM.chOrdPrice.value || 0),
+      price: ot === 'MKT' ? chMktLimitPx : Number(C_DOM.chOrdPrice.value || 0),
       triggerPrice: ot === 'SL' && C_DOM.chOrdTriggerPrice ? Number(C_DOM.chOrdTriggerPrice.value || 0) : 0,
       ltp: chartOrderState.ltp,
       userConfirmed: true

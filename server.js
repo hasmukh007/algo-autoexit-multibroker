@@ -327,6 +327,7 @@ function serveStatic(req, res, parsedUrl) {
   if (pathname === '/' || pathname === '') pathname = '/index.html';
   if (pathname === '/option-chain') pathname = '/option-chain.html';
   if (pathname === '/chart') pathname = '/chart.html';
+  if (pathname === '/order-window') pathname = '/order-window.html';
 
   const safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
   const filePath = path.join(__dirname, 'public', safePath);
@@ -537,6 +538,29 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      if (pathname.startsWith('/api/accounts/') && pathname.endsWith('/manage-orders') && method === 'POST') {
+        const id = pathname.replace('/api/accounts/', '').replace('/manage-orders', '');
+        const body = await parseBody(req);
+        const manageOrders = Boolean(body.manageOrders);
+        const updated = multiBrokerManager.setAccountManageOrders(id, manageOrders);
+        if (!manageOrders) {
+          autoExitEngine.emit('cancel_pending_confirmations', {
+            accountId: id,
+            reason: 'Account excluded from order management'
+          });
+        }
+        autoExitEngine.log(
+          'INFO',
+          `Order management ${manageOrders ? 'ENABLED' : 'DISABLED (View-Only)'} for broker account: ${updated.name}`
+        );
+        return sendJson(res, 200, {
+          success: true,
+          accountId: id,
+          manageOrders,
+          accounts: multiBrokerManager.getAccounts()
+        });
+      }
+
       if (pathname.startsWith('/api/accounts/') && pathname.endsWith('/paper-reset') && method === 'POST') {
         const id = pathname.replace('/api/accounts/', '').replace('/paper-reset', '');
         const body = await parseBody(req);
@@ -689,14 +713,30 @@ const server = http.createServer(async (req, res) => {
 
       if (pathname === '/api/orders' && method === 'POST') {
         const orderData = await parseBody(req);
+        if (!(Number(orderData.ltp) > 0) && (orderData.tradingSymbol || orderData.symbol)) {
+          const targetSym = String(orderData.tradingSymbol || orderData.symbol).trim().toUpperCase();
+          const snap = niftyFeedManager.getSnapshot();
+          if (snap && Array.isArray(snap.strikes)) {
+            for (const row of snap.strikes) {
+              for (const leg of [row.ce, row.pe]) {
+                if (leg && String(leg.symbol || '').trim().toUpperCase() === targetSym && Number(leg.ltp) > 0) {
+                  orderData.ltp = Number(leg.ltp);
+                  break;
+                }
+              }
+              if (Number(orderData.ltp) > 0) break;
+            }
+          }
+        }
         const result = await multiBrokerManager.placeOrder(orderData);
         const splitNote = result.sliced ? ` [Split into ${result.sliceCount} orders, Freeze=${result.freezeQty}]` : '';
+        const lmtNote = result.convertedFromMkt ? ` [MKT -> LMT @ ₹${result.price}]` : '';
         const routeNote = result.routingMode === 'all_funded'
           ? `across ${result.executedCount} funded broker(s)`
           : 'on selected broker';
         autoExitEngine.log(
           'INFO',
-          `Order placed ${routeNote}: ${orderData.transactionType || 'B'} ${orderData.tradingSymbol} x ${result.totalQuantity}${splitNote}`,
+          `Order placed ${routeNote}: ${orderData.transactionType || 'B'} ${orderData.tradingSymbol} x ${result.totalQuantity}${lmtNote}${splitNote}`,
           result
         );
         return sendJson(res, 200, result);

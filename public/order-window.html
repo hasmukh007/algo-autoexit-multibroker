@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quick Order Window | Multi-Broker Terminal</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
+  <style>
+    body {
+      margin: 0;
+      padding: 8px;
+      background: #070b14;
+      color: #e2e8f0;
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 12px;
+      overflow-x: hidden;
+    }
+
+    .ow-shell {
+      max-width: 440px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .ow-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 8px 10px;
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+    }
+
+    .ow-nifty-group {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .ow-nifty-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: #94a3b8;
+    }
+
+    .ow-nifty-ltp {
+      font-size: 14px;
+      font-weight: 700;
+      color: #f8fafc;
+    }
+
+    .ow-atm-badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(56, 189, 248, 0.14);
+      color: #38bdf8;
+      font-weight: 600;
+    }
+
+    .ow-top-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .ow-mode-pill {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(245, 158, 11, 0.16);
+      color: #fbbf24;
+    }
+
+    .ow-mode-pill.live {
+      background: rgba(16, 185, 129, 0.16);
+      color: #10b981;
+    }
+
+    .ow-card {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .ow-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .ow-grid-3 {
+      display: grid;
+      grid-template-columns: 1.2fr 0.9fr 0.9fr;
+      gap: 6px;
+    }
+
+    .ow-field {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .ow-field label {
+      font-size: 10px;
+      font-weight: 600;
+      color: #94a3b8;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .ow-field input,
+    .ow-field select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      background: #020617;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      color: #f8fafc;
+      font-size: 12px;
+      font-family: inherit;
+    }
+
+    .ow-field input:focus,
+    .ow-field select:focus {
+      outline: none;
+      border-color: #38bdf8;
+    }
+
+    .ow-seg-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      background: #020617;
+      padding: 3px;
+      border-radius: 6px;
+      border: 1px solid #1e293b;
+    }
+
+    .ow-seg-btn {
+      padding: 5px 6px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #94a3b8;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .ow-seg-btn.active {
+      background: #1e293b;
+      color: #38bdf8;
+    }
+
+    .ow-seg-btn.ce.active {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+    }
+
+    .ow-seg-btn.pe.active {
+      background: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+    }
+
+    .ow-ot-tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      background: #020617;
+      padding: 3px;
+      border-radius: 6px;
+      border: 1px solid #1e293b;
+    }
+
+    .ow-chips {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .ow-chip {
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #cbd5e1;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .ow-chip:hover {
+      border-color: #38bdf8;
+      color: #f8fafc;
+    }
+
+    .ow-symbol-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: #020617;
+      border: 1px solid #1e293b;
+    }
+
+    .ow-contract-ltp {
+      font-size: 14px;
+      font-weight: 700;
+      color: #10b981;
+      white-space: nowrap;
+    }
+
+    .ow-hint {
+      font-size: 10px;
+      color: #94a3b8;
+      line-height: 1.3;
+    }
+
+    .ow-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 2px;
+    }
+
+    .ow-btn-buy,
+    .ow-btn-sell {
+      padding: 10px 8px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      cursor: pointer;
+      color: #fff;
+      transition: transform 0.08s ease, opacity 0.15s ease;
+    }
+
+    .ow-btn-buy {
+      background: linear-gradient(135deg, #059669, #10b981);
+    }
+
+    .ow-btn-sell {
+      background: linear-gradient(135deg, #dc2626, #ef4444);
+    }
+
+    .ow-btn-buy:active,
+    .ow-btn-sell:active {
+      transform: scale(0.98);
+    }
+
+    .ow-pos-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: #cbd5e1;
+    }
+
+    .ow-pos-list {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      max-height: 155px;
+      overflow-y: auto;
+    }
+
+    .ow-pos-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+    }
+
+    .ow-pos-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .ow-pos-sym {
+      font-size: 11px;
+      font-weight: 700;
+      color: #f8fafc;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .ow-pos-sub {
+      font-size: 10px;
+      color: #94a3b8;
+    }
+
+    .ow-pos-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .ow-pnl-pos {
+      color: #10b981;
+      font-weight: 700;
+    }
+
+    .ow-pnl-neg {
+      color: #ef4444;
+      font-weight: 700;
+    }
+
+    .ow-link-btn {
+      background: transparent;
+      border: none;
+      color: #38bdf8;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .ow-toast {
+      position: fixed;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 7px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid #334155;
+      z-index: 9999;
+      display: none;
+      max-width: 92vw;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="ow-shell">
+    <!-- Compact Live Header -->
+    <div class="ow-topbar">
+      <div class="ow-nifty-group">
+        <span class="ow-nifty-label">NIFTY</span>
+        <span class="ow-nifty-ltp mono" id="owNiftyLtp">--</span>
+        <span class="ow-atm-badge mono" id="owAtmBadge">ATM --</span>
+      </div>
+      <div class="ow-top-right">
+        <span class="ow-mode-pill" id="owModePill">MOCK</span>
+        <button type="button" class="btn-xs btn-danger" id="owExitAllBtn"
+          title="Exit all open positions across brokers">Exit All</button>
+      </div>
+    </div>
+
+    <!-- Order Placement Card -->
+    <div class="ow-card">
+      <!-- Broker & Routing -->
+      <div class="ow-grid-2">
+        <div class="ow-field">
+          <label for="owBrokerSelect">Account</label>
+          <select id="owBrokerSelect">
+            <option value="">Loading...</option>
+          </select>
+        </div>
+        <div class="ow-field">
+          <label for="owRoutingMode">Routing</label>
+          <select id="owRoutingMode">
+            <option value="selected">Selected Broker</option>
+            <option value="all_funded">All Funded Brokers</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Strike & CE/PE Picker -->
+      <div class="ow-grid-2">
+        <div class="ow-field">
+          <label for="owStrikeSelect">
+            <span>Strike</span>
+            <button type="button" class="ow-link-btn" id="owUseAtmBtn">Use ATM</button>
+          </label>
+          <select id="owStrikeSelect">
+            <option value="">Awaiting feed...</option>
+          </select>
+        </div>
+        <div class="ow-field">
+          <label>Option Type</label>
+          <div class="ow-seg-tabs">
+            <button type="button" class="ow-seg-btn ce active" id="owCeBtn" data-opt="CE">CALL (CE)</button>
+            <button type="button" class="ow-seg-btn pe" id="owPeBtn" data-opt="PE">PUT (PE)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Symbol & Live LTP -->
+      <div class="ow-field">
+        <label for="owSymbol">
+          <span>Trading Symbol</span>
+          <span class="ow-chips">
+            <button type="button" class="ow-chip" data-strike-offset="0" data-opt="CE">ATM CE</button>
+            <button type="button" class="ow-chip" data-strike-offset="0" data-opt="PE">ATM PE</button>
+            <button type="button" class="ow-chip" data-strike-offset="-50">Str -50</button>
+            <button type="button" class="ow-chip" data-strike-offset="50">Str +50</button>
+          </span>
+        </label>
+        <div class="ow-symbol-row">
+          <input type="text" id="owSymbol" placeholder="e.g. NIFTY..."
+            style="border:none;background:transparent;padding:2px 4px;font-weight:700;font-family:'JetBrains Mono',monospace;">
+          <span class="ow-contract-ltp mono" id="owContractLtp">--</span>
+        </div>
+        <input type="hidden" id="owInstrumentToken">
+      </div>
+
+      <!-- Product, Order Type & Segment -->
+      <div class="ow-grid-3">
+        <div class="ow-field">
+          <label>Order Type</label>
+          <div class="ow-ot-tabs" id="owOrderTypeTabs">
+            <button type="button" class="ow-seg-btn active" data-ot="MKT">MKT</button>
+            <button type="button" class="ow-seg-btn" data-ot="L">LMT</button>
+            <button type="button" class="ow-seg-btn" data-ot="SL">SL</button>
+          </div>
+        </div>
+        <div class="ow-field">
+          <label for="owProduct">Product</label>
+          <select id="owProduct">
+            <option value="MIS" selected>MIS</option>
+            <option value="NRML">NRML</option>
+          </select>
+        </div>
+        <div class="ow-field">
+          <label for="owSegment">Segment</label>
+          <select id="owSegment">
+            <option value="nse_fo" selected>NFO</option>
+            <option value="bse_fo">BFO</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Quantity & Price Inputs -->
+      <div class="ow-grid-2">
+        <div class="ow-field">
+          <label for="owQuantity">
+            <span id="owQtyLabel">Qty (Lot 65)</span>
+            <span style="display:inline-flex;align-items:center;gap:3px;cursor:pointer;">
+              <input type="checkbox" id="owAutoQty" checked style="width:auto;margin:0;">
+              <span>Auto</span>
+            </span>
+          </label>
+          <input type="number" id="owQuantity" min="65" step="65" value="65">
+          <div class="ow-chips">
+            <button type="button" class="ow-chip ow-lot-chip" data-lots="1">1L</button>
+            <button type="button" class="ow-chip ow-lot-chip" data-lots="2">2L</button>
+            <button type="button" class="ow-chip ow-lot-chip" data-lots="3">3L</button>
+            <button type="button" class="ow-chip ow-lot-chip" data-lots="5">5L</button>
+          </div>
+        </div>
+
+        <div class="ow-field">
+          <div id="owTriggerWrap" style="display:none;">
+            <label for="owTriggerPrice">Trigger ₹</label>
+            <input type="number" id="owTriggerPrice" step="0.05" value="0.00">
+          </div>
+          <div id="owLimitWrap" style="display:none; margin-top:4px;">
+            <label for="owPrice">Limit ₹</label>
+            <input type="number" id="owPrice" step="0.05" value="0.00">
+          </div>
+          <div id="owMarketNote" class="ow-hint"
+            style="padding:8px;border:1px solid #1e293b;border-radius:6px;background:#020617;">
+            Sends Limit (L) order using Current Price as Limit Price.
+          </div>
+        </div>
+      </div>
+
+      <div class="ow-hint mono" id="owSizingHint">Balance: -- | Lot: 65</div>
+
+      <!-- Dual Action Buttons -->
+      <div class="ow-actions">
+        <button type="button" class="ow-btn-buy" id="owBuyBtn">BUY</button>
+        <button type="button" class="ow-btn-sell" id="owSellBtn">SELL</button>
+      </div>
+    </div>
+
+    <!-- Compact Open Positions Strip -->
+    <div class="ow-card">
+      <div class="ow-pos-header">
+        <span>Open Positions (<span id="owPosCount">0</span>)</span>
+        <span class="mono" id="owNetPnlPill">Net: ₹0.00</span>
+      </div>
+      <div class="ow-pos-list" id="owPosList">
+        <div class="ow-hint" style="text-align:center;padding:6px 0;">No open positions</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ow-toast" id="owToast"></div>
+  <script src="order-confirm.js"></script>
+  <script src="order-window.js"></script>
+</body>
+
+</html>

@@ -469,20 +469,22 @@ async function loadAccounts() {
       try { storedId = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
       const prevSelected = OC_DOM.ocOrdBroker.value || storedId;
       ocState.accounts = d.data;
+      const managedAccounts = d.data.filter(acc => acc.enabled && acc.manageOrders !== false);
       OC_DOM.ocOrdBroker.innerHTML = '';
-      if (d.data.length === 0) {
+      if (managedAccounts.length === 0) {
         const opt = document.createElement('option');
-        opt.value = 'mock_kotak_1';
-        opt.textContent = 'Default Broker (Simulation)';
+        opt.value = '';
+        opt.textContent = d.data.length === 0 ? 'Default Broker (Simulation)' : 'No broker checked for orders';
+        if (d.data.length === 0) opt.value = 'mock_kotak_1';
         OC_DOM.ocOrdBroker.appendChild(opt);
       } else {
-        d.data.forEach(acc => {
+        managedAccounts.forEach(acc => {
           const opt = document.createElement('option');
           opt.value = acc.id;
           opt.textContent = `${acc.name} (${acc.broker.toUpperCase()})`;
           OC_DOM.ocOrdBroker.appendChild(opt);
         });
-        if (prevSelected && d.data.some(acc => acc.id === prevSelected)) {
+        if (prevSelected && managedAccounts.some(acc => acc.id === prevSelected)) {
           OC_DOM.ocOrdBroker.value = prevSelected;
         }
       }
@@ -778,6 +780,8 @@ OC_DOM.ocOrderForm.addEventListener('submit', async e => {
   e.preventDefault();
   const ot = OC_DOM.ocOrdType.value;
   const routingMode = (OC_DOM.ocOrdRoutingMode && OC_DOM.ocOrdRoutingMode.value) || 'selected';
+  const ocLtp = Number(ocModalSpec.ltp || 0);
+  const mktLimitPx = ot === 'MKT' && ocLtp > 0 ? Number((Math.round(ocLtp / 0.05) * 0.05).toFixed(2)) : 0;
   const payload = {
     accountId: OC_DOM.ocOrdBroker.value,
     routingMode,
@@ -786,12 +790,12 @@ OC_DOM.ocOrderForm.addEventListener('submit', async e => {
     exchangeSegment: 'nse_fo',
     transactionType: OC_DOM.ocOrdSide.value,
     product: OC_DOM.ocOrdProduct.value,
-    orderType: ot,
+    orderType: mktLimitPx > 0 ? 'L' : ot,
     quantity: Number(OC_DOM.ocOrdQty.value),
     autoQuantity: Boolean(OC_DOM.ocAutoQty && OC_DOM.ocAutoQty.checked),
     lotSize: ocModalSpec.lotSize,
     freezeQty: ocModalSpec.freezeQty,
-    price: ot === 'MKT' ? 0 : Number(OC_DOM.ocOrdPrice.value || 0),
+    price: ot === 'MKT' ? mktLimitPx : Number(OC_DOM.ocOrdPrice.value || 0),
     triggerPrice: ot === 'SL' && OC_DOM.ocOrdTriggerPrice ? Number(OC_DOM.ocOrdTriggerPrice.value || 0) : 0,
     ltp: ocModalSpec.ltp,
     userConfirmed: true

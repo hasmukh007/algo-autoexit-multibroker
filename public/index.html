@@ -39,6 +39,14 @@
       </div>
 
       <div class="nifty-ticker-right">
+        <a href="/order-window" target="_blank" onclick="window.open('/order-window','algoOrderWindow','width=410,height=660,resizable=yes,scrollbars=yes,toolbar=no,menubar=no,location=no,status=no'); return false;" class="btn-option-chain-nav secondary-nav" id="openPopoutOrderBtn" title="Open Separate Small Order Window alongside Broker Chart">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
+          <span>Order Window</span>
+        </a>
         <a href="/chart" class="btn-option-chain-nav secondary-nav" title="Open Live NIFTY 3-Minute Candlestick Chart">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="3 17 9 11 13 15 21 7"></polyline>
@@ -480,10 +488,15 @@
                 <h2>Execute Order to Selected Broker</h2>
                 <p>Routes order to Angel One, Dhan, Kotak Neo, or Sahi. Auto-sizes from broker balance &amp; splits &gt; freeze.</p>
               </div>
-              <div class="nifty-atm-pill" id="orderTopPriceBanner" style="padding:6px 12px; font-size:12px;">
-                <span class="pill-label" id="orderBannerSymbol">ATM CE</span>
-                <span>Current Price:</span>
-                <strong class="mono" id="orderBannerLtp" style="color:var(--profit-color);">--</strong>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <button type="button" class="btn-sm btn-outline" onclick="window.open('/order-window','algoOrderWindow','width=410,height=660,resizable=yes,scrollbars=yes,toolbar=no,menubar=no,location=no,status=no');" title="Pop out small order window for side-by-side chart trading">
+                  Pop-Out Small Window
+                </button>
+                <div class="nifty-atm-pill" id="orderTopPriceBanner" style="padding:6px 12px; font-size:12px;">
+                  <span class="pill-label" id="orderBannerSymbol">ATM CE</span>
+                  <span>Current Price:</span>
+                  <strong class="mono" id="orderBannerLtp" style="color:var(--profit-color);">--</strong>
+                </div>
               </div>
             </div>
 
@@ -608,7 +621,7 @@
                   <div id="orderMarketNote">
                     <label>Execution Price</label>
                     <div class="input-hint mono" style="padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-secondary); color: var(--text-secondary);">
-                      Market Order — uses Current Price shown at top
+                      Sends Limit (L) order using Current Price shown at top
                     </div>
                   </div>
                 </div>
@@ -685,6 +698,7 @@
           <table class="data-table" id="accountsTable">
             <thead>
               <tr>
+                <th style="width:90px;">Manage Orders</th>
                 <th>Broker</th>
                 <th>Account Name</th>
                 <th>Client Code / UCC</th>
@@ -697,7 +711,7 @@
             </thead>
             <tbody id="accountsTableBody">
               <tr>
-                <td colspan="8" class="empty-state">Loading accounts...</td>
+                <td colspan="9" class="empty-state">Loading accounts...</td>
               </tr>
             </tbody>
           </table>

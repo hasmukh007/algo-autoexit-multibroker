@@ -1635,6 +1635,15 @@ async function run() {
     assert(chartJsRes.body.includes('updateCandleCountdown') && chartJsRes.body.includes('updateLivePriceLineWithCountdown') && chartJsRes.body.includes('recalcChartOrderQty'), 'chart.js must implement candle countdown on price line and quick order modal');
     console.log('   ✅ GET /chart serves live NIFTY chart page with Session Line, 5m/15m/1h HA S/R, Pivots, and PDH/PDL.');
 
+    const owRes = await httpRequest(testPort, '/order-window');
+    assert.strictEqual(owRes.status, 200);
+    assert(owRes.body.includes('owBuyBtn') && owRes.body.includes('owSellBtn') && owRes.body.includes('order-confirm.js'), 'Order window page must expose quick Buy/Sell controls and confirmation modal');
+    const owJsRes = await httpRequest(testPort, '/order-window.js');
+    assert.strictEqual(owJsRes.status, 200);
+    assert(owJsRes.body.includes('/api/orders/calculate-quantity') && owJsRes.body.includes('/api/status') && !owJsRes.body.includes('/api/portfolio') && owJsRes.body.includes('confirmOrderBeforeSend'), 'order-window.js must use valid endpoints for auto sizing and confirmation gate');
+    assert(homeRes.body.includes('/order-window'), 'Dashboard must include pop-out Order Window button');
+    console.log('   ✅ GET /order-window serves standalone compact pop-out Order Window.');
+
     const chartApiRes = await httpRequest(testPort, '/api/nifty-chart');
     assert.strictEqual(chartApiRes.status, 200);
     const chartApiJson = JSON.parse(chartApiRes.body);
@@ -1779,6 +1788,13 @@ async function run() {
     const paperResetRes = await httpRequest(testPort, `/api/accounts/${createdPaper.id}/paper-reset`, 'POST', { initialBalance: 250000 });
     assert.strictEqual(paperResetRes.status, 200);
     assert.strictEqual(JSON.parse(paperResetRes.body).funds.availableCash, 250000);
+
+    const manageOffRes = await httpRequest(testPort, `/api/accounts/${createdPaper.id}/manage-orders`, 'POST', { manageOrders: false });
+    assert.strictEqual(manageOffRes.status, 200);
+    const manageOffJson = JSON.parse(manageOffRes.body);
+    assert.strictEqual(manageOffJson.manageOrders, false);
+    assert.strictEqual(manageOffJson.accounts.find(a => a.id === createdPaper.id).manageOrders, false);
+    assert(homeRes.body.includes('Manage Orders'), 'Connected Broker Accounts table must include Manage Orders column');
 
     const delPaperRes = await httpRequest(testPort, `/api/accounts/${createdPaper.id}`, 'DELETE');
     assert.strictEqual(delPaperRes.status, 200);

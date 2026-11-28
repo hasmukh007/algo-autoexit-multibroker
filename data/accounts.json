@@ -7,7 +7,8 @@
     "apiKey": "jOjEZ6my",
     "clientCode": "AAAJ132850",
     "password": "1980",
-    "totpSecret": "MCGYGV2L7ISKLELVQTRKUQJ2RU"
+    "totpSecret": "MCGYGV2L7ISKLELVQTRKUQJ2RU",
+    "manageOrders": false
   },
   {
     "id": "acc_kotakneo_1795604175986",
@@ -22,7 +23,8 @@
     "brokerageType": "custom",
     "brokeragePerOrder": 10,
     "optionsBrokerage": 10,
-    "futuresBrokerage": 54
+    "futuresBrokerage": 54,
+    "manageOrders": false
   },
   {
     "id": "acc_sahi_1795675532208",
