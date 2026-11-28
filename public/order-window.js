@@ -675,6 +675,80 @@
     window.attachOrderConfirmationStream(es);
   }
 
+  // Remember Quick Order Window size and screen position across re-opens
+  const BOUNDS_STORAGE_KEY = 'algo_order_window_bounds';
+  let allowSaveBounds = false;
+  let lastBoundsSig = '';
+  let resizeSaveTimer = null;
+
+  function readSavedBounds() {
+    try {
+      const raw = localStorage.getItem(BOUNDS_STORAGE_KEY);
+      if (!raw) return null;
+      const b = JSON.parse(raw);
+      return b && typeof b === 'object' ? b : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveCurrentBounds(force = false) {
+    if (!allowSaveBounds && !force) return;
+    const ow = Math.round(Number(window.outerWidth || 0));
+    const oh = Math.round(Number(window.outerHeight || 0));
+    const iw = Math.round(Number(window.innerWidth || 0));
+    const ih = Math.round(Number(window.innerHeight || 0));
+    if (iw < 240 || ih < 260) return;
+
+    const left = Math.round(Number(window.screenX !== undefined ? window.screenX : (window.screenLeft || 0)));
+    const top = Math.round(Number(window.screenY !== undefined ? window.screenY : (window.screenTop || 0)));
+    const sig = `${iw}|${ih}|${ow}|${oh}|${left}|${top}`;
+    if (sig === lastBoundsSig) return;
+    lastBoundsSig = sig;
+
+    try {
+      localStorage.setItem(BOUNDS_STORAGE_KEY, JSON.stringify({
+        innerWidth: iw,
+        innerHeight: ih,
+        outerWidth: ow > 0 ? ow : iw,
+        outerHeight: oh > 0 ? oh : ih,
+        left,
+        top,
+        updatedAt: Date.now()
+      }));
+    } catch (e) {}
+  }
+
+  function restoreSavedBounds() {
+    const saved = readSavedBounds();
+    const isPopupLike = Boolean(window.opener) || (window.screen && window.outerWidth < window.screen.availWidth * 0.9);
+    if (saved && isPopupLike) {
+      const availW = (window.screen && window.screen.availWidth) || 1920;
+      const availH = (window.screen && window.screen.availHeight) || 1080;
+      const targetOuterW = Math.max(280, Math.min(availW, Math.round(Number(saved.outerWidth || saved.innerWidth || 410))));
+      const targetOuterH = Math.max(320, Math.min(availH, Math.round(Number(saved.outerHeight || saved.innerHeight || 660))));
+      try {
+        if (Number.isFinite(Number(saved.left)) && Number.isFinite(Number(saved.top))) {
+          window.moveTo(Math.round(Number(saved.left)), Math.round(Number(saved.top)));
+        }
+        window.resizeTo(targetOuterW, targetOuterH);
+      } catch (e) {}
+    }
+    setTimeout(() => {
+      allowSaveBounds = true;
+      saveCurrentBounds(true);
+    }, 450);
+  }
+
+  restoreSavedBounds();
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeSaveTimer);
+    resizeSaveTimer = setTimeout(() => saveCurrentBounds(false), 180);
+  });
+  window.addEventListener('beforeunload', () => saveCurrentBounds(false));
+  window.addEventListener('pagehide', () => saveCurrentBounds(false));
+  setInterval(() => saveCurrentBounds(false), 750);
+
   window.loadPositions = loadInitialData;
   loadInitialData();
 })();

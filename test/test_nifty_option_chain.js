@@ -1642,6 +1642,7 @@ async function run() {
     assert(owRes.body.includes('Checked Broker Only') && !owRes.body.includes('Selected Broker'), 'Order window must use Checked Broker Only labels');
     const owJsRes = await httpRequest(testPort, '/order-window.js');
     assert.strictEqual(owJsRes.status, 200);
+    assert(owJsRes.body.includes('algo_order_window_bounds') && owJsRes.body.includes('restoreSavedBounds') && owJsRes.body.includes('moveTo') && owJsRes.body.includes('resizeTo'), 'order-window.js must persist and restore window size and position');
     assert(owJsRes.body.includes('/api/orders/calculate-quantity') && owJsRes.body.includes('/api/orders/send-stoploss') && owJsRes.body.includes('/api/orders/send-target') && owJsRes.body.includes('targetQtyPct') && owJsRes.body.includes('/api/status') && !owJsRes.body.includes('/api/portfolio') && owJsRes.body.includes('confirmOrderBeforeSend'), 'order-window.js must support auto sizing, bulk SL/Target buttons with qty %, and confirmation gate');
     assert(homeRes.body.includes('/order-window'), 'Dashboard must include pop-out Order Window button');
     console.log('   ✅ GET /order-window serves standalone compact pop-out Order Window.');

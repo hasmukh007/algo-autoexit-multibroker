@@ -286,7 +286,51 @@
       .catch(() => {});
   }
 
+  const ORDER_WIN_BOUNDS_KEY = 'algo_order_window_bounds';
+
+  function getSavedOrderWindowBounds() {
+    try {
+      const raw = localStorage.getItem(ORDER_WIN_BOUNDS_KEY);
+      if (!raw) return null;
+      const b = JSON.parse(raw);
+      return b && typeof b === 'object' ? b : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function openQuickOrderWindow() {
+    const saved = getSavedOrderWindowBounds();
+    const availW = (window.screen && window.screen.availWidth) || 1920;
+    const availH = (window.screen && window.screen.availHeight) || 1080;
+    const w = Math.max(280, Math.min(availW, Math.round(Number((saved && (saved.innerWidth || saved.width)) || 410))));
+    const h = Math.max(320, Math.min(availH, Math.round(Number((saved && (saved.innerHeight || saved.height)) || 660))));
+    const hasLeft = saved && Number.isFinite(Number(saved.left));
+    const hasTop = saved && Number.isFinite(Number(saved.top));
+    const left = hasLeft ? Math.round(Number(saved.left)) : null;
+    const top = hasTop ? Math.round(Number(saved.top)) : null;
+
+    const parts = [`width=${w}`, `height=${h}`];
+    if (left !== null && top !== null) {
+      parts.push(`left=${left}`, `top=${top}`);
+    }
+    parts.push('resizable=yes', 'scrollbars=yes', 'toolbar=no', 'menubar=no', 'location=no', 'status=no');
+
+    const win = window.open('/order-window', 'algoOrderWindow', parts.join(','));
+    if (win) {
+      try {
+        if (left !== null && top !== null) win.moveTo(left, top);
+        if (saved && Number(saved.outerWidth) >= 280 && Number(saved.outerHeight) >= 320) {
+          win.resizeTo(Math.round(Number(saved.outerWidth)), Math.round(Number(saved.outerHeight)));
+        }
+        win.focus();
+      } catch (e) {}
+    }
+    return false;
+  }
+
   window.playOrderBellSound = playOrderBellSound;
   window.confirmOrderBeforeSend = confirmOrderBeforeSend;
   window.attachOrderConfirmationStream = attachOrderConfirmationStream;
+  window.openQuickOrderWindow = openQuickOrderWindow;
 })();

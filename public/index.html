@@ -39,7 +39,7 @@
       </div>
 
       <div class="nifty-ticker-right">
-        <a href="/order-window" target="_blank" onclick="window.open('/order-window','algoOrderWindow','width=410,height=660,resizable=yes,scrollbars=yes,toolbar=no,menubar=no,location=no,status=no'); return false;" class="btn-option-chain-nav secondary-nav" id="openPopoutOrderBtn" title="Open Separate Small Order Window alongside Broker Chart">
+        <a href="/order-window" target="_blank" onclick="return window.openQuickOrderWindow ? window.openQuickOrderWindow() : true;" class="btn-option-chain-nav secondary-nav" id="openPopoutOrderBtn" title="Open Separate Small Order Window alongside Broker Chart">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
             <polyline points="15 3 21 3 21 9"></polyline>
@@ -489,7 +489,7 @@
                 <p>Routes order to Angel One, Dhan, Kotak Neo, or Sahi. Auto-sizes from broker balance &amp; splits &gt; freeze.</p>
               </div>
               <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                <button type="button" class="btn-sm btn-outline" onclick="window.open('/order-window','algoOrderWindow','width=410,height=660,resizable=yes,scrollbars=yes,toolbar=no,menubar=no,location=no,status=no');" title="Pop out small order window for side-by-side chart trading">
+                <button type="button" class="btn-sm btn-outline" onclick="return window.openQuickOrderWindow ? window.openQuickOrderWindow() : window.open('/order-window','algoOrderWindow','width=410,height=660,resizable=yes,scrollbars=yes');" title="Pop out small order window for side-by-side chart trading">
                   Pop-Out Small Window
                 </button>
                 <div class="nifty-atm-pill" id="orderTopPriceBanner" style="padding:6px 12px; font-size:12px;">
