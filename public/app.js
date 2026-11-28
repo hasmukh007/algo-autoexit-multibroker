@@ -577,6 +577,15 @@ function initEventSource() {
     } catch (err) {}
   });
 
+  es.addEventListener('orders_updated', e => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data && Array.isArray(data.orders)) {
+        applyIncomingOrders(data.orders);
+      }
+    } catch (err) {}
+  });
+
   es.onerror = () => {
     DOM.connLabel.textContent = 'Reconnecting...';
     DOM.connStatus.querySelector('.status-indicator').className = 'status-indicator offline';
@@ -597,6 +606,20 @@ function getBrokerBadgeClass(broker) {
   if (broker === 'sahi') return 'badge-sahi';
   if (broker === 'paper') return 'badge-paper';
   return 'badge-kotakneo';
+}
+
+function applyIncomingOrders(ordersList = []) {
+  if (!Array.isArray(ordersList)) return;
+  const sig = ordersList
+    .map(o => `${o.accountId || ''}:${o.orderId || ''}:${o.status || ''}:${o.filledQuantity || 0}:${o.price || 0}`)
+    .join('|');
+  if (state.ordersSignature === sig && Array.isArray(state.orders)) return;
+  state.ordersSignature = sig;
+  state.orders = ordersList;
+  renderOrdersTable();
+  if (state.positionFilter === 'per_trade' || DOM.positionFilterGroup) {
+    renderPositionsTable();
+  }
 }
 
 function handleMarketTick(payload) {
@@ -625,6 +648,10 @@ function handleMarketTick(payload) {
   if (payload.positions) {
     state.positions = payload.positions;
     renderPositionsTable();
+  }
+
+  if (Array.isArray(payload.orders)) {
+    applyIncomingOrders(payload.orders);
   }
 
   if (payload.funds) {
@@ -859,11 +886,8 @@ async function loadOrders(force = false, manual = false) {
     const res = await fetch(url);
     const data = await res.json();
     if (data.success && Array.isArray(data.data)) {
-      state.orders = data.data;
-      renderOrdersTable();
-      if (state.positionFilter === 'per_trade' || DOM.positionFilterGroup) {
-        renderPositionsTable();
-      }
+      state.ordersSignature = '';
+      applyIncomingOrders(data.data);
     }
   } catch (e) {}
 }

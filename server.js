@@ -147,6 +147,10 @@ niftyFeedManager.on('tick', snapshot => {
     niftyCandleManager.onSpotTick(snapshot.spot.ltp, snapshot.timestamp || Date.now());
   }
   multiBrokerManager.syncPaperPositions(snapshot);
+  const misSq = multiBrokerManager.checkPaperMisSquareOff();
+  misSq.forEach(r => {
+    autoExitEngine.log('INFO', `[Paper MIS 3:30 PM Auto Square-Off] ${r.name}: ${r.squaredOffCount} position(s) closed at market price, ${r.cancelledOrdersCount} pending MIS order(s) cancelled.`);
+  });
   if (sseClients.size > 0) {
     broadcastSSE('nifty_tick', snapshot);
   }
@@ -154,6 +158,7 @@ niftyFeedManager.on('tick', snapshot => {
 
 multiBrokerManager.on('ws_tick', ({ broker, accountId, tick }) => {
   if (!tick || !(tick.ltp > 0)) return;
+  multiBrokerManager.syncPaperTick(tick);
   let sahiNiftyId = 10854;
   if (broker === 'sahi' && accountId) {
     const inst = multiBrokerManager.brokerInstances.get(accountId);
@@ -190,7 +195,24 @@ niftyCandleManager.on('history_backfilled', info => {
 
 multiBrokerManager.on('order_update', evt => {
   autoExitEngine.log('INFO', `Order/trade update received on ${String(evt.broker || '').toUpperCase()} WebSocket — refreshing net positions & holdings.`);
+  broadcastOrdersSnapshot();
 });
+
+multiBrokerManager.on('orders_changed', () => {
+  broadcastOrdersSnapshot();
+});
+
+function broadcastOrdersSnapshot() {
+  if (sseClients.size === 0) return;
+  try {
+    const cfgNow = configManager.loadConfig();
+    const rawOrders = typeof multiBrokerManager.getCachedOrders === 'function'
+      ? multiBrokerManager.getCachedOrders()
+      : [];
+    const enrichedOrders = multiBrokerManager.enrichOrdersWithCharges(rawOrders, (cfgNow && cfgNow.chargeSettings) || {});
+    broadcastSSE('orders_updated', { orders: enrichedOrders });
+  } catch (err) {}
+}
 
 scripMasterManager.on('scrip_master_loaded', summary => {
   autoExitEngine.log(
@@ -225,7 +247,14 @@ autoLoginScheduler.on('auto_login_completed', async payload => {
   }
 });
 
-// Background tick broadcaster: pushes enriched positions, charges, Net P&L, 9:00 AM balance
+// Background tick broadcaster & 3:30 PM IST MIS auto square-off monitor
+setInterval(() => {
+  const sqRes = multiBrokerManager.checkPaperMisSquareOff();
+  sqRes.forEach(r => {
+    autoExitEngine.log('INFO', `[Paper MIS 3:30 PM Auto Square-Off] ${r.name}: ${r.squaredOffCount} position(s) closed at market price, ${r.cancelledOrdersCount} pending MIS order(s) cancelled.`);
+  });
+}, 15000);
+
 setInterval(async () => {
   if (sseClients.size === 0) return;
 
@@ -241,6 +270,10 @@ setInterval(async () => {
     const cfgNow = configManager.loadConfig();
     const chargeSettings = cfgNow.chargeSettings || {};
     const enrichedPositions = multiBrokerManager.enrichPositionsWithCharges(rawPositions, openingBalance, chargeSettings);
+    const rawOrders = typeof multiBrokerManager.getCachedOrders === 'function'
+      ? multiBrokerManager.getCachedOrders()
+      : [];
+    const enrichedOrders = multiBrokerManager.enrichOrdersWithCharges(rawOrders, chargeSettings);
     for (const pos of enrichedPositions) {
       totalGrossPnl += Number(pos.grossPnl || 0);
       totalCharges += Number(pos.totalCharges || 0);
@@ -266,6 +299,7 @@ setInterval(async () => {
         openPositionsCount: enrichedPositions.filter(p => p.isOpen && p.netQty !== 0).length
       },
       positions: enrichedPositions,
+      orders: enrichedOrders,
       accounts: multiBrokerManager.getAccounts(),
       rules: autoExitEngine.getAllPositionRules(),
       targetStates: autoExitEngine.getAllTargetStates(),
@@ -749,6 +783,7 @@ const server = http.createServer(async (req, res) => {
           `Order placed ${routeNote}: ${orderData.transactionType || 'B'} ${orderData.tradingSymbol} x ${result.totalQuantity}${lmtNote}${splitNote}`,
           result
         );
+        broadcastOrdersSnapshot();
         return sendJson(res, 200, result);
       }
 
@@ -778,6 +813,7 @@ const server = http.createServer(async (req, res) => {
               `🛡️ Order Window SL (${result.slPct > 0 ? '+' : ''}${result.slPct}%) placed on ${item.brokerName} for ${item.symbol} (${item.quantity} qty): Trig ₹${item.triggerPrice} / Lim ₹${item.limitPrice} (Cap ₹${item.capitalBase})`
             );
           }
+          broadcastOrdersSnapshot();
         }
         return sendJson(res, 200, result);
       }
@@ -798,6 +834,7 @@ const server = http.createServer(async (req, res) => {
               `🎯 Order Window Target Limit (${result.targetPct > 0 ? '+' : ''}${result.targetPct}%) placed on ${item.brokerName} for ${item.symbol} (${item.quantity} qty): Limit ₹${item.limitPrice} (Cap ₹${item.capitalBase}, Charges ₹${item.chargesINR})`
             );
           }
+          broadcastOrdersSnapshot();
         }
         return sendJson(res, 200, result);
       }

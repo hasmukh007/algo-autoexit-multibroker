@@ -199,6 +199,7 @@ async function runTests() {
     id: 'paper_unit_1',
     name: 'Paper Options Desk',
     initialBalance: 200000,
+    enforceMarketHours: false,
     stateFile: paperStatePath
   });
   await paper.login();
@@ -1031,6 +1032,7 @@ async function runTests() {
     brokerageType: 'flat',
     brokeragePerOrder: 20,
     chargeSettings: ChargesCalculator.getDefaultChargeSettings(),
+    enforceMarketHours: false,
     stateFile: paperCarryPath
   };
   let paperCarry = new PaperBroker(paperCfg);
@@ -1148,6 +1150,7 @@ async function runTests() {
         resetMgr.brokerInstances.set(acc.id, new PaperBrokerCls({
           ...acc,
           isMock: false,
+          enforceMarketHours: false,
           chargeSettingsProvider: () => ChargesCalculator.getDefaultChargeSettings()
         }));
       }
@@ -1187,6 +1190,363 @@ async function runTests() {
   reloadedAfterTick.deleteStateFile();
   if (fs.existsSync(paperResetStateFile)) fs.unlinkSync(paperResetStateFile);
   console.log('   ✅ Paper reset reliably clears positions/orders & updates active balance across reloadBrokers().');
+
+  console.log('\n🧪 Test 17: Positions Tab Net Return % Uses Each Broker Account\'s Own Opening Balance...');
+  const pctMgr = new MultiBrokerManager(
+    { loadConfig: () => ({ mode: 'live', chargeSettings: ChargesCalculator.getDefaultChargeSettings(), riskSettings: {} }) },
+    { createAdapter: () => null },
+    null
+  );
+  pctMgr.getRawAccounts = () => [
+    { id: 'acc_kotak_pct', broker: 'kotakneo', name: 'Kotak', enabled: true, brokerageType: 'zero', brokeragePerOrder: 0 },
+    { id: 'acc_angel_pct', broker: 'angelone', name: 'Angel', enabled: true, brokerageType: 'zero', brokeragePerOrder: 0 },
+    { id: 'acc_paper_pct', broker: 'paper', name: 'Paper', enabled: true, initialBalance: 250000, brokerageType: 'zero', brokeragePerOrder: 0 }
+  ];
+  pctMgr.brokerInstances.set('acc_paper_pct', {
+    isPaper: true,
+    carriedBalance: 250000,
+    initialBalance: 250000,
+    getFundsSnapshot: () => ({ availableCash: 250000, carriedBalance: 250000, totalBalance: 250000 })
+  });
+  pctMgr.setOpeningBalanceProvider(() => ({
+    openingBalance: 850000,
+    isAutoCaptured: true,
+    accounts: [
+      { id: 'acc_kotak_pct', availableCash: 100000, totalBalance: 100000 },
+      { id: 'acc_angel_pct', availableCash: 500000, totalBalance: 500000 }
+    ]
+  }));
+
+  const zeroChargesPct = { sttPct: 0, exchangeTxnPct: 0, sebiPerCrore: 0, ipftPerCrore: 0, stampDutyBuyPct: 0, gstPct: 0 };
+  const multiPos = [
+    { accountId: 'acc_kotak_pct', broker: 'kotakneo', symbol: 'NIFTY28MAR2625000CE', product: 'MIS', netQty: 0, buyQty: 65, sellQty: 65, buyAvg: 100, sellAvg: 100, realizedPnl: 5000, unrealizedPnl: 0, totalPnl: 5000, isOpen: false },
+    { accountId: 'acc_angel_pct', broker: 'angelone', symbol: 'NIFTY28MAR2625000CE', product: 'MIS', netQty: 0, buyQty: 65, sellQty: 65, buyAvg: 100, sellAvg: 100, realizedPnl: 5000, unrealizedPnl: 0, totalPnl: 5000, isOpen: false },
+    { accountId: 'acc_paper_pct', broker: 'paper', symbol: 'NIFTY28MAR2625000CE', product: 'MIS', netQty: 0, buyQty: 65, sellQty: 65, buyAvg: 100, sellAvg: 100, realizedPnl: 5000, unrealizedPnl: 0, totalPnl: 5000, isOpen: false }
+  ];
+  const enrichedPct = pctMgr.enrichPositionsWithCharges(multiPos, 850000, zeroChargesPct);
+  assert.strictEqual(enrichedPct[0].accountOpeningBalance, 100000);
+  assert.strictEqual(enrichedPct[0].netProfitPctOfCapital, 5, 'Kotak ₹5,000 net on ₹1,00,000 opening must be +5%');
+  assert.strictEqual(enrichedPct[1].accountOpeningBalance, 500000);
+  assert.strictEqual(enrichedPct[1].netProfitPctOfCapital, 1, 'Angel ₹5,000 net on ₹5,00,000 opening must be +1%');
+  assert.strictEqual(enrichedPct[2].accountOpeningBalance, 250000);
+  assert.strictEqual(enrichedPct[2].netProfitPctOfCapital, 2, 'Paper ₹5,000 net on ₹2,50,000 carried opening must be +2%');
+  console.log('   ✅ Positions Net Return % calculated per broker opening balance (5% / 1% / 2% vs 8.5L global).');
+
+  console.log('\n🧪 Test 18: Paper Account Limit & Trigger Orders Complete Only When Feed Price Matches...');
+  const paperLimPath = path.join(os.tmpdir(), `paper-lim-trig-${Date.now()}.json`);
+  const paperLim = new PaperBroker({
+    id: 'paper_lim_1',
+    name: 'Paper Limit/SL',
+    initialBalance: 200000,
+    enforceMarketHours: false,
+    stateFile: paperLimPath
+  });
+  await paperLim.login();
+
+  // 18A: Place Entry Limit BUY @ ₹95 while NO feed tick yet -> stays OPEN
+  const entryNoFeed = await paperLim.placeOrder({
+    tradingSymbol: 'NIFTY28MAR2625000CE',
+    exchangeSegment: 'nse_fo',
+    product: 'MIS',
+    transactionType: 'B',
+    orderType: 'L',
+    quantity: 65,
+    price: 95
+  });
+  assert.strictEqual(entryNoFeed.status, 'OPEN');
+  assert.strictEqual((await paperLim.getPositions()).length, 0);
+
+  // Feed tick at ₹100 -> above Buy Limit ₹95, must remain OPEN
+  paperLim.syncWithNiftySnapshot({
+    strikes: [{ strike: 25000, ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 100 }, pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 100 } }]
+  });
+  assert.strictEqual((await paperLim.getOrderBook())[0].status, 'OPEN');
+  assert.strictEqual((await paperLim.getPositions()).length, 0);
+
+  // Feed tick at ₹97 -> still > ₹95, stays OPEN
+  paperLim.syncWithNiftySnapshot({
+    strikes: [{ strike: 25000, ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 97 }, pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 100 } }]
+  });
+  assert.strictEqual((await paperLim.getOrderBook())[0].status, 'OPEN');
+
+  // Feed tick drops to ₹94 <= ₹95 -> Buy Limit fills and opens position!
+  paperLim.syncWithNiftySnapshot({
+    strikes: [{ strike: 25000, ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 94 }, pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 100 } }]
+  });
+  const ordersAfterEntry = await paperLim.getOrderBook();
+  assert.strictEqual(ordersAfterEntry[0].status, 'COMPLETE', 'Buy Limit must complete once feed price <= limit');
+  assert.strictEqual(ordersAfterEntry[0].filledQuantity, 65);
+  assert.strictEqual(ordersAfterEntry[0].price, 94);
+  assert.strictEqual((await paperLim.getPositions())[0].netQty, 65);
+
+  // 18B: Target Limit SELL @ ₹110 while feed is ₹94 -> must stay OPEN until feed >= ₹110
+  const tgtSell = await paperLim.placeOrder({
+    tradingSymbol: 'NIFTY28MAR2625000CE',
+    exchangeSegment: 'nse_fo',
+    product: 'MIS',
+    transactionType: 'S',
+    orderType: 'L',
+    quantity: 65,
+    price: 110
+  });
+  assert.strictEqual(tgtSell.status, 'OPEN');
+  paperLim.syncWithNiftySnapshot({
+    strikes: [{ strike: 25000, ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 108 }, pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 100 } }]
+  });
+  assert.strictEqual((await paperLim.getOrderBook()).find(o => o.orderId === tgtSell.orderId).status, 'OPEN');
+  paperLim.syncWithNiftySnapshot({
+    strikes: [{ strike: 25000, ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 110 }, pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 100 } }]
+  });
+  assert.strictEqual((await paperLim.getOrderBook()).find(o => o.orderId === tgtSell.orderId).status, 'COMPLETE');
+  assert.strictEqual((await paperLim.getPositions())[0].netQty, 0);
+
+  // 18C: Trigger SL BUY @ Trigger ₹105 / Limit ₹106 when feed is ₹100 -> stays OPEN until feed >= ₹105 (via syncWithTick)
+  const trigBuy = await paperLim.placeOrder({
+    tradingSymbol: 'NIFTY28MAR2625000PE',
+    exchangeSegment: 'nse_fo',
+    product: 'MIS',
+    transactionType: 'B',
+    orderType: 'SL',
+    quantity: 65,
+    triggerPrice: 105,
+    price: 106
+  });
+  assert.strictEqual(trigBuy.status, 'OPEN');
+  paperLim.syncWithTick({ symbol: 'NIFTY28MAR2625000PE', ltp: 104 });
+  assert.strictEqual((await paperLim.getOrderBook()).find(o => o.orderId === trigBuy.orderId).status, 'OPEN');
+  paperLim.syncWithTick({ symbol: 'NIFTY28MAR2625000PE', ltp: 105.5 });
+  const trigFilled = (await paperLim.getOrderBook()).find(o => o.orderId === trigBuy.orderId);
+  assert.strictEqual(trigFilled.status, 'COMPLETE', 'SL trigger order must complete when feed matches trigger & limit');
+  assert.strictEqual(trigFilled.price, 105.5);
+  paperLim.deleteStateFile();
+  if (fs.existsSync(paperLimPath)) fs.unlinkSync(paperLimPath);
+  console.log('   ✅ Paper Limit & Trigger orders remain OPEN until live feed price matches.');
+
+  console.log('\n🧪 Test 19: Paper Account MIS 3:30 PM Market Square-Off & NRML Next-Day Carry-Forward...');
+  const { getISTInfo } = require('../lib/niftyFeedManager');
+  const todayIst = getISTInfo().dateStr;
+  const paperEodPath = path.join(os.tmpdir(), `paper-mis-nrml-${Date.now()}.json`);
+  const paperEod = new PaperBroker({
+    id: 'paper_eod_1',
+    name: 'Paper MIS/NRML',
+    initialBalance: 100000,
+    brokerageType: 'zero',
+    brokeragePerOrder: 0,
+    enforceMarketHours: false,
+    stateFile: paperEodPath
+  });
+  await paperEod.login();
+  // Seed feed prices
+  paperEod.syncWithNiftySnapshot({
+    strikes: [{
+      strike: 25000,
+      ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 100 },
+      pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 100 }
+    }]
+  });
+
+  // Open an MIS position at 10:00 AM IST & a pending MIS Limit order
+  await paperEod.placeOrder({
+    tradingSymbol: 'NIFTY28MAR2625000CE',
+    exchangeSegment: 'nse_fo',
+    product: 'MIS',
+    transactionType: 'B',
+    orderType: 'MKT',
+    quantity: 65,
+    ltp: 100,
+    openedAt: `${todayIst}T10:00:00+05:30`
+  });
+  await paperEod.placeOrder({
+    tradingSymbol: 'NIFTY28MAR2625000CE',
+    exchangeSegment: 'nse_fo',
+    product: 'MIS',
+    transactionType: 'S',
+    orderType: 'L',
+    quantity: 65,
+    price: 150,
+    openedAt: `${todayIst}T10:05:00+05:30`
+  });
+  // Open an NRML position at 10:00 AM IST & a pending NRML Limit order
+  await paperEod.placeOrder({
+    tradingSymbol: 'NIFTY28MAR2625000PE',
+    exchangeSegment: 'nse_fo',
+    product: 'NRML',
+    transactionType: 'B',
+    orderType: 'MKT',
+    quantity: 65,
+    ltp: 100,
+    openedAt: `${todayIst}T10:10:00+05:30`
+  });
+  await paperEod.placeOrder({
+    tradingSymbol: 'NIFTY28MAR2625000PE',
+    exchangeSegment: 'nse_fo',
+    product: 'NRML',
+    transactionType: 'S',
+    orderType: 'L',
+    quantity: 65,
+    price: 160,
+    openedAt: `${todayIst}T10:15:00+05:30`
+  });
+
+  // Feed moves: MIS CE = ₹115, NRML PE = ₹120
+  paperEod.syncWithNiftySnapshot({
+    strikes: [{
+      strike: 25000,
+      ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 115 },
+      pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 120 }
+    }]
+  });
+
+  // Before 15:30 IST (e.g. 15:29 IST) -> MIS stays open
+  const before330 = paperEod.autoSquareOffMisIfNeeded(new Date(`${todayIst}T15:29:00+05:30`));
+  assert.strictEqual(before330.squaredOffCount, 0);
+  assert.strictEqual((await paperEod.getPositions()).find(p => p.product === 'MIS').netQty, 65);
+
+  // At 15:30 IST -> MIS auto squared off at current market price ₹115, pending MIS order cancelled, NRML stays open!
+  const at330 = paperEod.autoSquareOffMisIfNeeded(new Date(`${todayIst}T15:30:00+05:30`));
+  assert.strictEqual(at330.squaredOffCount, 1, 'MIS position must be squared off at 3:30 PM IST');
+  assert.strictEqual(at330.cancelledOrdersCount, 1, 'Pending MIS order must be cancelled at 3:30 PM IST');
+  const posAfter330 = await paperEod.getPositions();
+  const misPos330 = posAfter330.find(p => p.product === 'MIS');
+  const nrmlPos330 = posAfter330.find(p => p.product === 'NRML');
+  assert.strictEqual(misPos330.netQty, 0);
+  assert.strictEqual(misPos330.isOpen, false);
+  assert.strictEqual(misPos330.realizedPnl, 975, 'MIS must square off at market price 115: (115 - 100) * 65 = 975');
+  assert.strictEqual(nrmlPos330.netQty, 65, 'NRML position must remain open after 3:30 PM');
+  assert.strictEqual(nrmlPos330.isOpen, true);
+
+  // Roll over to next trading day -> MIS net P&L (gross 975 minus statutory charges) settles into carriedBalance, NRML carries forward!
+  const nrmlFundsBeforeRoll = await paperEod.getFunds();
+  const misNetBeforeRoll = paperEod._computePositionNetInfo(misPos330, paperEod._getChargeConfig()).netPnl;
+  const rolledEod = paperEod.rolloverIfNewDay('2099-12-31');
+  assert.strictEqual(rolledEod, true);
+  const posDay2 = await paperEod.getPositions();
+  assert.strictEqual(posDay2.length, 1, 'Only NRML position carries forward to next day; MIS settled');
+  assert.strictEqual(posDay2[0].product, 'NRML');
+  assert.strictEqual(posDay2[0].netQty, 65);
+  assert.strictEqual(posDay2[0].buyAvg, 100, 'Carried NRML must retain entry avg ₹100');
+  assert.strictEqual(posDay2[0].unrealizedPnl, 1300, 'Carried NRML must preserve open unrealized P&L');
+  const nrmlFundsDay2 = await paperEod.getFunds();
+  assert.strictEqual(nrmlFundsDay2.carriedBalance, Number((100000 + misNetBeforeRoll).toFixed(2)), 'Day 1 MIS Net P&L carries into Day 2 carriedBalance');
+  assert.strictEqual(nrmlFundsDay2.totalBalance, nrmlFundsBeforeRoll.totalBalance, 'Total equity must stay continuous across NRML carry-forward');
+  const ordersDay2 = await paperEod.getOrderBook();
+  assert.strictEqual(ordersDay2.some(o => o.product === 'NRML' && o.status === 'OPEN'), true, 'Pending NRML order carries forward');
+  paperEod.deleteStateFile();
+  if (fs.existsSync(paperEodPath)) fs.unlinkSync(paperEodPath);
+  console.log('   ✅ Paper MIS 3:30 PM Market Square-Off & NRML next-day carry-forward verified.');
+
+  console.log('\n🧪 Test 20: Paper Account Only Trades During Market Hours (Mon-Fri 09:15-15:30 IST)...');
+  const paperMktHrsPath = path.join(os.tmpdir(), `paper-mkt-hrs-${Date.now()}.json`);
+  const paperMktHrs = new PaperBroker({
+    id: 'paper_mkt_hrs_1',
+    name: 'Paper Market Hours',
+    initialBalance: 100000,
+    stateFile: paperMktHrsPath
+  });
+  assert.strictEqual(paperMktHrs.enforceMarketHours, true, 'PaperBroker must enforce market hours by default');
+
+  const blockedTimes = [
+    ['Saturday', '2026-11-28T11:00:00+05:30'],
+    ['Sunday', '2026-11-29T11:00:00+05:30'],
+    ['Before 09:15 IST', '2026-11-27T09:14:00+05:30'],
+    ['At/After 15:30 IST', '2026-11-27T15:30:00+05:30']
+  ];
+  for (const [label, iso] of blockedTimes) {
+    let errMsg = '';
+    try {
+      await paperMktHrs.placeOrder({
+        tradingSymbol: 'NIFTY28MAR2625000CE',
+        exchangeSegment: 'nse_fo',
+        product: 'MIS',
+        transactionType: 'B',
+        orderType: 'MKT',
+        quantity: 65,
+        ltp: 100,
+        openedAt: iso
+      });
+    } catch (e) {
+      errMsg = e.message;
+    }
+    assert(errMsg.toLowerCase().includes('market hours'), `Expected market-hours rejection for ${label}, got: "${errMsg}"`);
+  }
+
+  // Allowed during Fri 09:15–15:29:59 IST: place Limit Buy @ 95 while LTP is 100 -> stays OPEN
+  const openLimMkt = await paperMktHrs.placeOrder({
+    tradingSymbol: 'NIFTY28MAR2625000CE',
+    exchangeSegment: 'nse_fo',
+    product: 'NRML',
+    transactionType: 'B',
+    orderType: 'L',
+    quantity: 65,
+    price: 95,
+    ltp: 100,
+    openedAt: '2026-11-27T14:30:00+05:30'
+  });
+  assert.strictEqual(openLimMkt.status, 'OPEN');
+
+  // Off-hours tick (Saturday) must NOT trigger/fill pending Paper Limit orders
+  paperMktHrs.syncWithNiftySnapshot({
+    strikes: [{ strike: 25000, ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 94 }, pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 100 } }]
+  }, new Date('2026-11-28T11:00:00+05:30'));
+  assert.strictEqual((await paperMktHrs.getOrderBook())[0].status, 'OPEN', 'Pending Limit order must NOT fill outside market hours');
+
+  // Market-hours tick (Friday 14:35 IST) DOES fill matching Limit order
+  paperMktHrs.syncWithNiftySnapshot({
+    strikes: [{ strike: 25000, ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 94 }, pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 100 } }]
+  }, new Date('2026-11-27T14:35:00+05:30'));
+  assert.strictEqual((await paperMktHrs.getOrderBook())[0].status, 'COMPLETE', 'Pending Limit order must fill during market hours');
+  paperMktHrs.deleteStateFile();
+  if (fs.existsSync(paperMktHrsPath)) fs.unlinkSync(paperMktHrsPath);
+  console.log('   ✅ Paper market-hours gating (Mon-Fri 09:15-15:30 IST) verified.');
+
+  console.log('\n🧪 Test 21: Paper Account Order Book & orders_changed Event Update Immediately on Order Placement...');
+  const obStatePath = path.join(os.tmpdir(), `paper-ob-rt-${Date.now()}.json`);
+  const obMgr = new MultiBrokerManager(
+    { loadConfig: () => ({ mode: 'live', chargeSettings: ChargesCalculator.getDefaultChargeSettings(), riskSettings: {} }) },
+    { createAdapter: () => null },
+    null
+  );
+  obMgr.enforceMarketHours = false;
+  let obMemAccs = [{ id: 'paper_ob_1', broker: 'paper', name: 'Paper Realtime OB', enabled: true, initialBalance: 200000, stateFile: obStatePath }];
+  obMgr.getRawAccounts = () => obMemAccs.map(a => ({ ...a }));
+  obMgr.saveRawAccounts = next => {
+    obMemAccs = next.map(a => ({ ...a }));
+    obMgr.reloadBrokers();
+  };
+  obMgr.reloadBrokers();
+
+  const orderEvents = [];
+  obMgr.on('orders_changed', evt => orderEvents.push(evt));
+
+  await obMgr.placeOrder({
+    accountId: 'paper_ob_1',
+    tradingSymbol: 'NIFTY28MAR2625000CE',
+    exchangeSegment: 'nse_fo',
+    transactionType: 'B',
+    orderType: 'L',
+    quantity: 65,
+    price: 95,
+    ltp: 100,
+    product: 'MIS',
+    userConfirmed: true
+  });
+  assert.strictEqual(orderEvents.length, 1, 'Placing Paper Limit order must emit orders_changed immediately');
+  let cachedOb = obMgr.getCachedOrders();
+  assert.strictEqual(cachedOb.length, 1, 'getCachedOrders() must immediately contain newly placed Paper order');
+  assert.strictEqual(cachedOb[0].status, 'OPEN');
+
+  // Matching tick fills the order and immediately fires orders_changed + updates getCachedOrders()
+  obMgr.syncPaperPositions({
+    strikes: [{ strike: 25000, ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 94 }, pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 100 } }]
+  });
+  assert.strictEqual(orderEvents.length, 2, 'Filling Paper order from feed must emit orders_changed immediately');
+  cachedOb = obMgr.getCachedOrders();
+  assert.strictEqual(cachedOb[0].status, 'COMPLETE');
+  assert.strictEqual(cachedOb[0].filledQuantity, 65);
+
+  obMgr.brokerInstances.get('paper_ob_1').deleteStateFile();
+  if (fs.existsSync(obStatePath)) fs.unlinkSync(obStatePath);
+  console.log('   ✅ Immediate Paper Order Book & orders_changed event updates verified.');
 
   scheduler.stopScheduler();
   mgr.mockManager.stopSimulation();
