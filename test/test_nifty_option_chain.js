@@ -1747,6 +1747,15 @@ async function run() {
     assert.strictEqual(statusRes.status, 200);
     const statusData = JSON.parse(statusRes.body);
     assert(statusData.riskSettings && statusData.dailyOrders && statusData.portfolioSchedule && statusData.chargeSettings, 'GET /api/status must expose riskSettings, dailyOrders, portfolioSchedule, and chargeSettings');
+    assert(homeRes.body.includes('quickAllowPaperOffHours') && homeRes.body.includes('paperOffHoursToggle'), 'Dashboard must expose Paper off-hours testing toggle');
+
+    const origAllowOffHours = Boolean(statusData.riskSettings.allowPaperAfterHours);
+    const toggleOnRes = await httpRequest(testPort, '/api/risk-settings', 'POST', { allowPaperAfterHours: true });
+    assert.strictEqual(toggleOnRes.status, 200);
+    assert.strictEqual(JSON.parse(toggleOnRes.body).riskSettings.allowPaperAfterHours, true);
+    const toggleOffRes = await httpRequest(testPort, '/api/risk-settings', 'POST', { allowPaperAfterHours: origAllowOffHours });
+    assert.strictEqual(toggleOffRes.status, 200);
+    assert.strictEqual(JSON.parse(toggleOffRes.body).riskSettings.allowPaperAfterHours, origAllowOffHours);
 
     // Verify GET & POST /api/charge-settings (then restore original settings)
     const getChgRes = await httpRequest(testPort, '/api/charge-settings');

@@ -97,6 +97,9 @@ const DOM = {
   quickOrdersHint: document.getElementById('quickOrdersHint'),
   quickRoutingMode: document.getElementById('quickRoutingMode'),
   quickRoutingHint: document.getElementById('quickRoutingHint'),
+  quickAllowPaperOffHours: document.getElementById('quickAllowPaperOffHours'),
+  quickPaperHoursHint: document.getElementById('quickPaperHoursHint'),
+  paperOffHoursToggle: document.getElementById('paperOffHoursToggle'),
   applyGlobalRuleBtn: document.getElementById('applyGlobalRuleBtn'),
 
   // Metrics
@@ -497,8 +500,51 @@ function syncRiskSettingsToUI(risk = {}, dailyOrders = null, forceApply = false)
   if (DOM.orderRoutingMode) {
     DOM.orderRoutingMode.value = rMode;
   }
+  const allowOffHours = Boolean(risk.allowPaperAfterHours);
+  if (DOM.quickAllowPaperOffHours) DOM.quickAllowPaperOffHours.checked = allowOffHours;
+  if (DOM.paperOffHoursToggle) DOM.paperOffHoursToggle.checked = allowOffHours;
+  if (DOM.quickPaperHoursHint) {
+    DOM.quickPaperHoursHint.textContent = allowOffHours
+      ? '24x7 test trading enabled'
+      : 'Market hours only (09:15–15:30 IST)';
+  }
   updateQuickHints();
 }
+
+async function saveAllowPaperOffHoursToggle(allow) {
+  const checked = Boolean(allow);
+  if (DOM.quickAllowPaperOffHours) DOM.quickAllowPaperOffHours.checked = checked;
+  if (DOM.paperOffHoursToggle) DOM.paperOffHoursToggle.checked = checked;
+  if (DOM.quickPaperHoursHint) {
+    DOM.quickPaperHoursHint.textContent = checked
+      ? '24x7 test trading enabled'
+      : 'Market hours only (09:15–15:30 IST)';
+  }
+  try {
+    const res = await fetch('/api/risk-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allowPaperAfterHours: checked })
+    });
+    const d = await res.json();
+    if (d && d.success && d.riskSettings) {
+      syncRiskSettingsToUI(d.riskSettings, d.dailyOrders, true);
+      showToast(
+        checked
+          ? 'Paper off-hours testing ENABLED (trades allowed 24x7 including weekends)'
+          : 'Paper market-hours restriction ENABLED (Mon–Fri 09:15 AM – 03:30 PM IST)',
+        checked ? 'success' : 'info'
+      );
+    }
+  } catch (e) {
+    showToast(e.message, 'error');
+  }
+}
+
+[DOM.quickAllowPaperOffHours, DOM.paperOffHoursToggle].forEach(el => {
+  if (!el) return;
+  el.addEventListener('change', () => saveAllowPaperOffHoursToggle(el.checked));
+});
 
 [DOM.quickCapitalDeployPct, DOM.quickTargetPct, DOM.quickNearBuffer, DOM.quickStopLossPct, DOM.quickMaxOrders].forEach(el => {
   if (!el) return;
@@ -1780,6 +1826,10 @@ DOM.applyGlobalRuleBtn.addEventListener('click', async () => {
   }
 
   // Persist global day order & risk settings
+  const allowPaperAfterHours = Boolean(
+    (DOM.quickAllowPaperOffHours && DOM.quickAllowPaperOffHours.checked) ||
+    (DOM.paperOffHoursToggle && DOM.paperOffHoursToggle.checked)
+  );
   const res = await fetch('/api/risk-settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1790,6 +1840,7 @@ DOM.applyGlobalRuleBtn.addEventListener('click', async () => {
       maxDailyLossNetPct: stopLossPct,
       maxDailyOrders,
       orderRoutingMode,
+      allowPaperAfterHours,
       autoExitEnabled: true
     })
   });

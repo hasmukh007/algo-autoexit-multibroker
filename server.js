@@ -1085,13 +1085,20 @@ const server = http.createServer(async (req, res) => {
         if (sanitized.orderRoutingMode !== undefined) {
           sanitized.orderRoutingMode = sanitized.orderRoutingMode === 'all_funded' ? 'all_funded' : 'selected';
         }
+        if (sanitized.allowPaperAfterHours !== undefined) {
+          sanitized.allowPaperAfterHours = Boolean(sanitized.allowPaperAfterHours);
+        }
         currentConfig = configManager.saveConfig({ riskSettings: sanitized });
         autoExitEngine.clearDailyBreaker();
         const rs = currentConfig.riskSettings;
+        if (typeof multiBrokerManager.setAllowPaperAfterHours === 'function') {
+          multiBrokerManager.setAllowPaperAfterHours(Boolean(rs.allowPaperAfterHours));
+        }
         const slLogTxt = rs.maxDailyLossNetPct > 0 ? `+${rs.maxDailyLossNetPct}%` : `${rs.maxDailyLossNetPct}%`;
+        const paperHoursTxt = rs.allowPaperAfterHours ? 'Paper Off-Hours Test: ON (24x7)' : 'Paper Hours: Market Only';
         autoExitEngine.log(
           'INFO',
-          `Updated day order/risk settings: Deploy ${rs.capitalDeployPct}% capital, Net Target +${rs.targetDailyNetProfitPct}% (after charges), SL ${slLogTxt}, Max Orders/Day ${rs.maxDailyOrders > 0 ? rs.maxDailyOrders : 'Unlimited'}, Routing: ${rs.orderRoutingMode === 'all_funded' ? 'All Checked Brokers' : 'Checked Broker'}`
+          `Updated day order/risk settings: Deploy ${rs.capitalDeployPct}% capital, Net Target +${rs.targetDailyNetProfitPct}% (after charges), SL ${slLogTxt}, Max Orders/Day ${rs.maxDailyOrders > 0 ? rs.maxDailyOrders : 'Unlimited'}, Routing: ${rs.orderRoutingMode === 'all_funded' ? 'All Checked Brokers' : 'Checked Broker'}, ${paperHoursTxt}`
         );
         return sendJson(res, 200, {
           success: true,

@@ -240,6 +240,15 @@
             <span class="hint-calc" id="quickRoutingHint">Checked broker execution</span>
           </div>
 
+          <div class="quick-ctrl-group">
+            <label for="quickAllowPaperOffHours">Paper Trading Test:</label>
+            <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; padding:6px 8px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:var(--bg-secondary); font-size:12px;">
+              <input type="checkbox" id="quickAllowPaperOffHours" style="width:14px; height:14px; cursor:pointer; accent-color:var(--accent-color, #38bdf8);">
+              <span>Allow Off-Hours (Test)</span>
+            </label>
+            <span class="hint-calc" id="quickPaperHoursHint">Market hours only (09:15–15:30 IST)</span>
+          </div>
+
           <div class="quick-ctrl-actions">
             <button class="btn-primary btn-sm" id="applyGlobalRuleBtn" title="Save day capital %, max orders, routing mode, and apply Net Profit % / Max Loss rules">
               Save &amp; Apply Settings
@@ -689,7 +698,11 @@
             <h2>Connected Broker Accounts</h2>
             <p>Configure multiple broker accounts (Kotak Neo, Angel One SmartAPI, DhanHQ). When any order executes on any broker, the position immediately appears on the page.</p>
           </div>
-          <div class="panel-header-actions" style="display:flex; gap:8px;">
+          <div class="panel-header-actions" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; padding:6px 10px; border:1px solid var(--border-color); border-radius:var(--radius-sm); background:var(--bg-secondary); font-size:12px;" title="Allow testing Paper Trading orders outside Mon-Fri 09:15 AM - 03:30 PM IST">
+              <input type="checkbox" id="paperOffHoursToggle" style="width:14px; height:14px; cursor:pointer; accent-color:var(--accent-color, #38bdf8);">
+              <span>Test Paper Off-Hours</span>
+            </label>
             <button class="btn-outline btn-sm" id="addPaperAccountBtn">+ Add Paper Account</button>
             <button class="btn-primary btn-sm" id="addNewAccountBtn">+ Add Broker Account</button>
           </div>

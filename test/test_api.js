@@ -995,8 +995,8 @@ async function runTests() {
   assert.strictEqual(tgtRes.sent[0].orderType, 'L');
   assert.strictEqual(tgtRes.sent[0].triggerPrice, 0, 'Target Limit order must have triggerPrice = 0');
   assert.strictEqual(tgtRes.sent[0].quantity, 100);
-  assert(tgtRes.sent[0].limitPrice >= 110.2 && tgtRes.sent[0].limitPrice <= 110.35, `Expected Kotak +10% Target Limit ~110.25, got ${tgtRes.sent[0].limitPrice}`);
-  assert(tgtRes.sent[1].limitPrice >= 110.7 && tgtRes.sent[1].limitPrice <= 110.85, `Expected Angel +10% Target Limit ~110.75, got ${tgtRes.sent[1].limitPrice}`);
+  assert(tgtRes.sent[0].limitPrice >= 111.2 && tgtRes.sent[0].limitPrice <= 111.35, `Expected Kotak +10% Target Limit +₹1 extra ~111.30, got ${tgtRes.sent[0].limitPrice}`);
+  assert(tgtRes.sent[1].limitPrice >= 111.7 && tgtRes.sent[1].limitPrice <= 111.85, `Expected Angel +10% Target Limit +₹1 extra ~111.75, got ${tgtRes.sent[1].limitPrice}`);
   assert.strictEqual(bulkSlSent[0].orderType, 'L');
   assert.strictEqual(bulkSlSent[0].triggerPrice, 0);
   assert.strictEqual(bulkSlSent[1].orderType, 'L');
@@ -1604,11 +1604,11 @@ async function runTests() {
         { orderId: 'S1', symbol: item.symbol, transactionType: 'S', quantity: 650, filledQuantity: 650, price: item.limitPrice, status: 'COMPLETE' }
       ]
     );
-    assert(chgCheck.netPnl >= 10000 && chgCheck.netPnl < 10060, `Actual Net P&L at target limit ₹${item.limitPrice} must match ~10% (got ₹${chgCheck.netPnl})`);
+    assert(chgCheck.netPnl >= 10600 && chgCheck.netPnl < 10720, `Actual Net P&L at target limit ₹${item.limitPrice} must match 10% + ₹1 extra buffer (got ₹${chgCheck.netPnl})`);
   }
   assert(tgtNetRes.items[1].limitPrice > tgtNetRes.items[0].limitPrice, '₹20/ord flat brokerage target price must exceed ₹0/ord target price');
 
-  // 22B: AutoExitEngine staged fullTargetPrice also solves charges & brokerage at target exit price
+  // 22B: AutoExitEngine staged fullTargetPrice also solves charges & brokerage + ₹1 extra at target exit price
   const aeTgtEngine = new AutoExitEngine(
     {
       mockManager: { updateLtpsFromRealFeed() {} },
@@ -1633,8 +1633,85 @@ async function runTests() {
     ChargesCalculator.getDefaultChargeSettings(),
     null
   );
-  assert(fullCheck.netPnl >= 2000 && fullCheck.netPnl < 2015, `AutoExit fullTargetPrice ₹${aeTs.fullTargetPrice} must yield Net P&L >= ₹2,000 (+2%) after charges (got ₹${fullCheck.netPnl})`);
+  assert(fullCheck.netPnl >= 2120 && fullCheck.netPnl < 2160, `AutoExit fullTargetPrice ₹${aeTs.fullTargetPrice} must yield Net P&L for +2% + ₹1 extra (got ₹${fullCheck.netPnl})`);
   console.log(`   ✅ Profit Target prices include charges & brokerage: ZeroBrk ₹${tgtNetRes.items[0].limitPrice}, Flat20 ₹${tgtNetRes.items[1].limitPrice}, AutoExit +2% ₹${aeTs.fullTargetPrice} (Net ₹${fullCheck.netPnl}).`);
+
+  console.log('\n🧪 Test 23: Toggle Option to Test Paper Trading During Non-Market Hours...');
+  const togglePath = path.join(os.tmpdir(), `paper-offhours-toggle-${Date.now()}.json`);
+  let mockAllowAfterHours = false;
+  const toggleMgr = new MultiBrokerManager(
+    { loadConfig: () => ({ mode: 'live', chargeSettings: ChargesCalculator.getDefaultChargeSettings(), riskSettings: { allowPaperAfterHours: mockAllowAfterHours } }) },
+    { createAdapter: () => null },
+    null
+  );
+  let toggleAccs = [{ id: 'paper_tog_1', broker: 'paper', name: 'Paper Toggle', enabled: true, initialBalance: 100000, stateFile: togglePath }];
+  toggleMgr.getRawAccounts = () => toggleAccs.map(a => ({ ...a }));
+  toggleMgr.saveRawAccounts = next => {
+    toggleAccs = next.map(a => ({ ...a }));
+    toggleMgr.reloadBrokers();
+  };
+  toggleMgr.reloadBrokers();
+
+  // Off by default -> weekend trade rejected
+  let blockedOffHours = '';
+  try {
+    await toggleMgr.brokerInstances.get('paper_tog_1').placeOrder({
+      tradingSymbol: 'NIFTY28MAR2625000CE',
+      exchangeSegment: 'nse_fo',
+      product: 'NRML',
+      transactionType: 'B',
+      orderType: 'MKT',
+      quantity: 65,
+      ltp: 100,
+      openedAt: '2026-11-28T11:20:00+05:30' // Saturday
+    });
+  } catch (e) {
+    blockedOffHours = e.message;
+  }
+  assert(blockedOffHours.toLowerCase().includes('market hours'), 'Default must block non-market-hours Paper trade');
+
+  // Enable allowPaperAfterHours -> weekend trade + pending limit fill succeed!
+  mockAllowAfterHours = true;
+  toggleMgr.setAllowPaperAfterHours(true);
+  const satOrd = await toggleMgr.brokerInstances.get('paper_tog_1').placeOrder({
+    tradingSymbol: 'NIFTY28MAR2625000CE',
+    exchangeSegment: 'nse_fo',
+    product: 'NRML',
+    transactionType: 'B',
+    orderType: 'L',
+    quantity: 65,
+    price: 95,
+    ltp: 100,
+    openedAt: '2026-11-28T11:20:00+05:30'
+  });
+  assert.strictEqual(satOrd.status, 'OPEN');
+  toggleMgr.brokerInstances.get('paper_tog_1').syncWithNiftySnapshot({
+    strikes: [{ strike: 25000, ce: { symbol: 'NIFTY28MAR2625000CE', ltp: 94 }, pe: { symbol: 'NIFTY28MAR2625000PE', ltp: 100 } }]
+  }, new Date('2026-11-28T11:21:00+05:30'));
+  assert.strictEqual((await toggleMgr.brokerInstances.get('paper_tog_1').getOrderBook())[0].status, 'COMPLETE', 'Off-hours Paper Limit order must fill when allowPaperAfterHours is ON');
+
+  // Turn toggle back OFF -> strict market hours restored immediately
+  mockAllowAfterHours = false;
+  toggleMgr.setAllowPaperAfterHours(false);
+  let reblockedMsg = '';
+  try {
+    await toggleMgr.brokerInstances.get('paper_tog_1').placeOrder({
+      tradingSymbol: 'NIFTY28MAR2625000CE',
+      exchangeSegment: 'nse_fo',
+      product: 'MIS',
+      transactionType: 'B',
+      orderType: 'MKT',
+      quantity: 65,
+      ltp: 100,
+      openedAt: '2026-11-28T11:25:00+05:30'
+    });
+  } catch (e) {
+    reblockedMsg = e.message;
+  }
+  assert(reblockedMsg.toLowerCase().includes('market hours'), 'Disabling off-hours toggle must restore strict market-hours check');
+  toggleMgr.brokerInstances.get('paper_tog_1').deleteStateFile();
+  if (fs.existsSync(togglePath)) fs.unlinkSync(togglePath);
+  console.log('   ✅ Paper off-hours testing toggle verified.');
 
   scheduler.stopScheduler();
   mgr.mockManager.stopSimulation();
