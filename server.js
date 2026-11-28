@@ -564,10 +564,20 @@ const server = http.createServer(async (req, res) => {
       if (pathname.startsWith('/api/accounts/') && pathname.endsWith('/paper-reset') && method === 'POST') {
         const id = pathname.replace('/api/accounts/', '').replace('/paper-reset', '');
         const body = await parseBody(req);
-        const result = multiBrokerManager.resetPaperAccount(id, body.initialBalance !== undefined ? Number(body.initialBalance) : null);
+        const rawBal = body.initialBalance !== undefined && body.initialBalance !== null && body.initialBalance !== ''
+          ? Number(body.initialBalance)
+          : null;
+        const result = multiBrokerManager.resetPaperAccount(id, rawBal);
         autoExitEngine.clearAccountBreaker(id);
+        if (typeof openingBalanceScheduler.updateAccountBalance === 'function') {
+          openingBalanceScheduler.updateAccountBalance(id, result.funds);
+        }
         autoExitEngine.log('INFO', `Reset Paper Trading account ${id} balance to ₹${result.funds.availableCash.toLocaleString('en-IN')}`);
-        return sendJson(res, 200, { success: true, ...result });
+        return sendJson(res, 200, {
+          success: true,
+          ...result,
+          accounts: multiBrokerManager.getAccounts()
+        });
       }
 
       if (pathname.startsWith('/api/accounts/') && method === 'PUT') {

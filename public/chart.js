@@ -1188,6 +1188,13 @@ function initEventSource() {
     C_DOM.connStatus.querySelector('.status-indicator').className = 'status-indicator online';
   });
 
+  es.addEventListener('market_tick', e => {
+    try {
+      const m = JSON.parse(e.data);
+      if (m && Array.isArray(m.accounts)) renderChartBrokerSelect(m.accounts);
+    } catch (err) {}
+  });
+
   es.addEventListener('nifty_tick', e => {
     try {
       const snap = JSON.parse(e.data);
@@ -1325,6 +1332,48 @@ function defaultChLimitPrice(basePrice, side) {
   return roundChTick(Math.max(0.05, p + (side === 'S' ? -0.5 : 0.5)));
 }
 
+let lastChBrokerSig = '';
+
+function formatChAvailBal(val) {
+  const num = Number(val);
+  if (!Number.isFinite(num)) return '';
+  return `₹${num.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+}
+
+function renderChartBrokerSelect(accounts) {
+  if (!C_DOM.chOrdBroker || !Array.isArray(accounts)) return;
+  const managedAccounts = accounts.filter(acc => acc.enabled && acc.manageOrders !== false);
+  const sig = managedAccounts
+    .map(a => `${a.id}:${a.name}:${a.broker}:${a.availableCash ?? ''}`)
+    .join('|');
+  if (sig === lastChBrokerSig && C_DOM.chOrdBroker.options.length > 0) return;
+  lastChBrokerSig = sig;
+
+  let storedBroker = '';
+  try { storedBroker = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
+  const prev = C_DOM.chOrdBroker.value || storedBroker;
+  C_DOM.chOrdBroker.innerHTML = '';
+  if (managedAccounts.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No broker checked for orders';
+    C_DOM.chOrdBroker.appendChild(opt);
+  } else {
+    managedAccounts.forEach(acc => {
+      const opt = document.createElement('option');
+      opt.value = acc.id;
+      const availStr = acc.availableCash !== undefined && acc.availableCash !== null
+        ? ` — Avail ${formatChAvailBal(acc.availableCash)}`
+        : '';
+      opt.textContent = `${acc.name} (${acc.broker.toUpperCase()})${availStr}`;
+      C_DOM.chOrdBroker.appendChild(opt);
+    });
+    if (prev && managedAccounts.some(a => a.id === prev)) {
+      C_DOM.chOrdBroker.value = prev;
+    }
+  }
+}
+
 async function loadChartOrderAccounts() {
   try {
     const [accRes, statusRes] = await Promise.all([
@@ -1339,28 +1388,8 @@ async function loadChartOrderAccounts() {
     if (C_DOM.chOrdRoutingMode) {
       C_DOM.chOrdRoutingMode.value = rMode === 'all_funded' ? 'all_funded' : 'selected';
     }
-    if (d.success && Array.isArray(d.data) && C_DOM.chOrdBroker) {
-      let storedBroker = '';
-      try { storedBroker = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
-      const prev = C_DOM.chOrdBroker.value || storedBroker;
-      const managedAccounts = d.data.filter(acc => acc.enabled && acc.manageOrders !== false);
-      C_DOM.chOrdBroker.innerHTML = '';
-      if (managedAccounts.length === 0) {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.textContent = 'No broker checked for orders';
-        C_DOM.chOrdBroker.appendChild(opt);
-      } else {
-        managedAccounts.forEach(acc => {
-          const opt = document.createElement('option');
-          opt.value = acc.id;
-          opt.textContent = `${acc.name} (${acc.broker.toUpperCase()})`;
-          C_DOM.chOrdBroker.appendChild(opt);
-        });
-        if (prev && managedAccounts.some(a => a.id === prev)) {
-          C_DOM.chOrdBroker.value = prev;
-        }
-      }
+    if (d.success && Array.isArray(d.data)) {
+      renderChartBrokerSelect(d.data);
     }
   } catch (e) {}
 }

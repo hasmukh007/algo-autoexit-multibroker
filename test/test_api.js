@@ -1021,6 +1021,173 @@ async function runTests() {
   assert.strictEqual(tgt325_25.items[0].quantity, 130, '325 qty (5 lots) at 25% must ceil to 2 lots = 130');
   console.log(`   ✅ Order Window Bulk Target Limit verified: LMT Kotak @ ₹${tgtRes.sent[0].limitPrice} / Angel @ ₹${tgtRes.sent[1].limitPrice} (325 -> 50%:${tgt325_50.items[0].quantity}, 25%:${tgt325_25.items[0].quantity}).`);
 
+  // 14. Paper Account Net Position P&L Balance Sync & Automatic Carry-Forward Across Restart & New Day
+  console.log('\n14. Testing Paper Account Net Position P&L Balance Sync & Auto Carry-Forward...');
+  const paperCarryPath = path.join(os.tmpdir(), `paper-carry-${Date.now()}.json`);
+  const paperCfg = {
+    id: 'paper_carry_1',
+    name: 'Paper Carry Test',
+    initialBalance: 100000,
+    brokerageType: 'flat',
+    brokeragePerOrder: 20,
+    chargeSettings: ChargesCalculator.getDefaultChargeSettings(),
+    stateFile: paperCarryPath
+  };
+  let paperCarry = new PaperBroker(paperCfg);
+  await paperCarry.login();
+  await paperCarry.placeOrder({
+    tradingSymbol: 'NIFTY01DEC26C25000',
+    exchangeSegment: 'nse_fo',
+    product: 'MIS',
+    transactionType: 'B',
+    orderType: 'L',
+    quantity: 100,
+    price: 100,
+    ltp: 100
+  });
+  // Live price rises to ₹120 -> unrealized = +2000, minus round-trip charges (~75) => Net Position P&L updates Paper Balance!
+  paperCarry.syncWithNiftySnapshot({
+    strikes: [{ strike: 25000, ce: { symbol: 'NIFTY01DEC26C25000', ltp: 120 }, pe: { symbol: 'NIFTY01DEC26P25000', ltp: 90 } }]
+  });
+  const openFunds = await paperCarry.getFunds();
+  assert(openFunds.netPnl > 1950 && openFunds.netPnl < 1985, `Expected Net P&L after buy charges ~1971.2, got ${openFunds.netPnl}`);
+  assert.strictEqual(openFunds.totalBalance, Number((100000 + openFunds.netPnl).toFixed(2)), 'Paper totalBalance must reflect Net Position P&L');
+  assert.strictEqual(openFunds.availableCash, Number((openFunds.totalBalance - 10000).toFixed(2)), 'Paper availableCash must reflect Net Equity minus utilized margin');
+
+  // Close position at ₹120
+  await paperCarry.placeOrder({
+    tradingSymbol: 'NIFTY01DEC26C25000',
+    exchangeSegment: 'nse_fo',
+    product: 'MIS',
+    transactionType: 'S',
+    orderType: 'L',
+    quantity: 100,
+    price: 120,
+    ltp: 120
+  });
+  const closedFunds = await paperCarry.getFunds();
+  const expectedDay1End = closedFunds.totalBalance;
+  assert(expectedDay1End > 101900 && expectedDay1End < 101950);
+  assert.strictEqual(closedFunds.availableCash, expectedDay1End);
+
+  // Simulate server restart on same day -> carried equity must remain intact
+  paperCarry = new PaperBroker(paperCfg);
+  assert.strictEqual((await paperCarry.getFunds()).totalBalance, expectedDay1End, 'Must carry balance across restart');
+
+  // Simulate next trading day rollover -> previous net P&L carries forward into new day carriedBalance automatically!
+  const rolled = paperCarry.rolloverIfNewDay('2099-12-31');
+  assert.strictEqual(rolled, true);
+  const day2Funds = await paperCarry.getFunds();
+  assert.strictEqual(day2Funds.carriedBalance, expectedDay1End, 'Next day carriedBalance must equal Day 1 ending net balance');
+  assert.strictEqual(day2Funds.availableCash, expectedDay1End, 'Next day availableCash must carry forward automatically');
+  assert.strictEqual((await paperCarry.getPositions()).length, 0, 'Prior day MIS/closed positions clear after carrying P&L forward');
+
+  // Verify MultiBrokerManager exposes live carried balance on getAccounts() & getAccountOpeningBalance()
+  const paperMgr = new MultiBrokerManager(
+    { loadConfig: () => ({ mode: 'live', chargeSettings: ChargesCalculator.getDefaultChargeSettings(), riskSettings: {} }) },
+    { createAdapter: () => null },
+    null
+  );
+  paperMgr.getRawAccounts = () => [{ id: 'paper_carry_1', broker: 'paper', name: 'Paper Carry Test', enabled: true, initialBalance: 100000 }];
+  paperMgr.brokerInstances.set('paper_carry_1', paperCarry);
+  const accListWithCarry = paperMgr.getAccounts();
+  assert.strictEqual(accListWithCarry[0].availableCash, expectedDay1End);
+  assert.strictEqual(accListWithCarry[0].carriedBalance, expectedDay1End);
+  assert.strictEqual(paperMgr.getAccountOpeningBalance('paper_carry_1'), expectedDay1End);
+
+  paperCarry.deleteStateFile();
+  if (fs.existsSync(paperCarryPath)) fs.unlinkSync(paperCarryPath);
+  console.log(`   ✅ Paper Account Net P&L & Auto Carry-Forward verified: Start ₹100,000 -> End/Carry ₹${expectedDay1End}.`);
+
+  console.log('\n🧪 Test 15: MultiBrokerManager.getAccounts() Exposes Available Balance for All Brokers...');
+  const balMgr = new MultiBrokerManager(
+    { loadConfig: () => ({ mode: 'live', chargeSettings: ChargesCalculator.getDefaultChargeSettings(), riskSettings: {} }) },
+    { createAdapter: () => null },
+    null
+  );
+  balMgr.getRawAccounts = () => [
+    { id: 'angel_live', broker: 'angelone', name: 'Angel Live', enabled: true },
+    { id: 'dhan_live', broker: 'dhan', name: 'Dhan Live', enabled: true },
+    { id: 'kotak_live', broker: 'kotak', name: 'Kotak Live', enabled: true },
+    { id: 'sahi_live', broker: 'sahi', name: 'Sahi Live', enabled: true },
+    { id: 'paper_live', broker: 'paper', name: 'Paper Live', enabled: true, initialBalance: 150000 }
+  ];
+  balMgr.brokerInstances.set('angel_live', { _cache: { funds: { data: { availableCash: 120000, utilizedMargin: 15000, totalBalance: 135000 } } } });
+  balMgr.brokerInstances.set('dhan_live', { _cache: { funds: { data: { availableCash: 220000, utilizedMargin: 5000, totalBalance: 225000 } } } });
+  balMgr.brokerInstances.set('kotak_live', { _cache: { funds: { data: { availableCash: 320000, utilizedMargin: 0, totalBalance: 320000 } } } });
+  balMgr.brokerInstances.set('sahi_live', { _cache: { funds: { data: { availableCash: 420000, utilizedMargin: 20000, totalBalance: 440000 } } } });
+  balMgr.brokerInstances.set('paper_live', { isPaper: true, getFundsSnapshot: () => ({ availableCash: 148500, utilizedMargin: 1500, totalBalance: 150000, carriedBalance: 150000 }) });
+
+  const allAccountsWithBal = balMgr.getAccounts();
+  assert.strictEqual(allAccountsWithBal.find(a => a.id === 'angel_live').availableCash, 120000);
+  assert.strictEqual(allAccountsWithBal.find(a => a.id === 'dhan_live').availableCash, 220000);
+  assert.strictEqual(allAccountsWithBal.find(a => a.id === 'kotak_live').availableCash, 320000);
+  assert.strictEqual(allAccountsWithBal.find(a => a.id === 'sahi_live').availableCash, 420000);
+  assert.strictEqual(allAccountsWithBal.find(a => a.id === 'paper_live').availableCash, 148500);
+
+  // Also check Mock Mode exposes availableCash for mock accounts via getAccounts()
+  const mockAccs = mgr.getAccounts();
+  assert(mockAccs.length > 0 && mockAccs.every(a => typeof a.availableCash === 'number'), 'Every mock account must expose numeric availableCash');
+  console.log('   ✅ Available balance exposed on Angel One, Dhan, Kotak Neo, Sahi, Paper, and Mock accounts.');
+
+  console.log('\n🧪 Test 16: MultiBrokerManager.resetPaperAccount() Resets Active Instance After reloadBrokers()...');
+  const paperResetStateFile = path.join(os.tmpdir(), `paper-reset-bug-${Date.now()}.json`);
+  const PaperBrokerCls = require('../lib/brokers/paperBroker');
+  let memAccounts = [{ id: 'paper_bug_1', broker: 'paper', name: 'Paper Reset Test', enabled: true, initialBalance: 100000, stateFile: paperResetStateFile }];
+  const resetMgr = new MultiBrokerManager(
+    { loadConfig: () => ({ mode: 'live', chargeSettings: ChargesCalculator.getDefaultChargeSettings(), riskSettings: {} }) },
+    { createAdapter: () => null },
+    null
+  );
+  resetMgr.getRawAccounts = () => memAccounts.map(a => ({ ...a }));
+  resetMgr.saveRawAccounts = next => {
+    memAccounts = next.map(a => ({ ...a }));
+    resetMgr.brokerInstances.clear();
+    for (const acc of memAccounts) {
+      if (acc.enabled && acc.broker === 'paper') {
+        resetMgr.brokerInstances.set(acc.id, new PaperBrokerCls({
+          ...acc,
+          isMock: false,
+          chargeSettingsProvider: () => ChargesCalculator.getDefaultChargeSettings()
+        }));
+      }
+    }
+  };
+  resetMgr.saveRawAccounts(memAccounts);
+  // Place a paper trade so positions & orders are non-empty and cash != initialBalance
+  await resetMgr.placeOrder({
+    accountId: 'paper_bug_1',
+    tradingSymbol: 'NIFTY28MAR2625000CE',
+    exchangeSegment: 'nse_fo',
+    transactionType: 'B',
+    orderType: 'L',
+    quantity: 65,
+    price: 100,
+    ltp: 100,
+    product: 'MIS',
+    userConfirmed: true
+  });
+  assert.strictEqual((await resetMgr.brokerInstances.get('paper_bug_1').getPositions()).length, 1);
+  assert.strictEqual((await resetMgr.brokerInstances.get('paper_bug_1').getOrderBook()).length, 1);
+
+  // Reset Paper with a new balance >= 1000 (previously orphaned inst across reloadBrokers!)
+  const resetOut = resetMgr.resetPaperAccount('paper_bug_1', 250000);
+  assert.strictEqual(resetOut.funds.availableCash, 250000);
+  const activePaperAfter = resetMgr.brokerInstances.get('paper_bug_1');
+  assert.strictEqual((await activePaperAfter.getPositions()).length, 0, 'Active Paper instance positions must be cleared after reset');
+  assert.strictEqual((await activePaperAfter.getOrderBook()).length, 0, 'Active Paper instance orders must be cleared after reset');
+  assert.strictEqual((await activePaperAfter.getFunds()).availableCash, 250000, 'Active Paper instance balance must equal 250000');
+
+  // Verify subsequent syncPaperPositions() tick & reload do NOT bring back old state!
+  resetMgr.syncPaperPositions({ strikes: [] });
+  resetMgr.saveRawAccounts(memAccounts);
+  const reloadedAfterTick = resetMgr.brokerInstances.get('paper_bug_1');
+  assert.strictEqual((await reloadedAfterTick.getPositions()).length, 0, 'Reset must persist across sync & reloadBrokers');
+  assert.strictEqual((await reloadedAfterTick.getFunds()).availableCash, 250000, 'Reset balance must persist across sync & reloadBrokers');
+  reloadedAfterTick.deleteStateFile();
+  if (fs.existsSync(paperResetStateFile)) fs.unlinkSync(paperResetStateFile);
+  console.log('   ✅ Paper reset reliably clears positions/orders & updates active balance across reloadBrokers().');
+
   scheduler.stopScheduler();
   mgr.mockManager.stopSimulation();
   if (typeof mgr.disconnectAll === 'function') mgr.disconnectAll();

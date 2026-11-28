@@ -443,6 +443,48 @@ async function loadInitialSnapshot() {
   } catch (e) {}
 }
 
+let lastOcBrokerSig = '';
+
+function formatOcAvailBal(val) {
+  const num = Number(val);
+  if (!Number.isFinite(num)) return '';
+  return `₹${num.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+}
+
+function renderOcBrokerSelect(accounts) {
+  if (!OC_DOM.ocOrdBroker || !Array.isArray(accounts)) return;
+  ocState.accounts = accounts;
+  const managedAccounts = accounts.filter(acc => acc.enabled && acc.manageOrders !== false);
+  const sig = `${accounts.length}:${managedAccounts.map(a => `${a.id}:${a.name}:${a.broker}:${a.availableCash ?? ''}`).join('|')}`;
+  if (sig === lastOcBrokerSig && OC_DOM.ocOrdBroker.options.length > 0) return;
+  lastOcBrokerSig = sig;
+
+  let storedId = '';
+  try { storedId = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
+  const prevSelected = OC_DOM.ocOrdBroker.value || storedId;
+  OC_DOM.ocOrdBroker.innerHTML = '';
+  if (managedAccounts.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = accounts.length === 0 ? 'Default Broker (Simulation)' : 'No broker checked for orders';
+    if (accounts.length === 0) opt.value = 'mock_kotak_1';
+    OC_DOM.ocOrdBroker.appendChild(opt);
+  } else {
+    managedAccounts.forEach(acc => {
+      const opt = document.createElement('option');
+      opt.value = acc.id;
+      const availStr = acc.availableCash !== undefined && acc.availableCash !== null
+        ? ` — Avail ${formatOcAvailBal(acc.availableCash)}`
+        : '';
+      opt.textContent = `${acc.name} (${acc.broker.toUpperCase()})${availStr}`;
+      OC_DOM.ocOrdBroker.appendChild(opt);
+    });
+    if (prevSelected && managedAccounts.some(acc => acc.id === prevSelected)) {
+      OC_DOM.ocOrdBroker.value = prevSelected;
+    }
+  }
+}
+
 async function loadAccounts() {
   try {
     const [accRes, statusRes] = await Promise.all([
@@ -465,29 +507,7 @@ async function loadAccounts() {
       }
     }
     if (d.success && Array.isArray(d.data)) {
-      let storedId = '';
-      try { storedId = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
-      const prevSelected = OC_DOM.ocOrdBroker.value || storedId;
-      ocState.accounts = d.data;
-      const managedAccounts = d.data.filter(acc => acc.enabled && acc.manageOrders !== false);
-      OC_DOM.ocOrdBroker.innerHTML = '';
-      if (managedAccounts.length === 0) {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.textContent = d.data.length === 0 ? 'Default Broker (Simulation)' : 'No broker checked for orders';
-        if (d.data.length === 0) opt.value = 'mock_kotak_1';
-        OC_DOM.ocOrdBroker.appendChild(opt);
-      } else {
-        managedAccounts.forEach(acc => {
-          const opt = document.createElement('option');
-          opt.value = acc.id;
-          opt.textContent = `${acc.name} (${acc.broker.toUpperCase()})`;
-          OC_DOM.ocOrdBroker.appendChild(opt);
-        });
-        if (prevSelected && managedAccounts.some(acc => acc.id === prevSelected)) {
-          OC_DOM.ocOrdBroker.value = prevSelected;
-        }
-      }
+      renderOcBrokerSelect(d.data);
     }
   } catch (e) {}
 }
@@ -501,6 +521,13 @@ function initEventSource() {
   es.addEventListener('connected', () => {
     OC_DOM.connLabel.textContent = 'Live SSE Active';
     OC_DOM.connStatus.querySelector('.status-indicator').className = 'status-indicator online';
+  });
+
+  es.addEventListener('market_tick', e => {
+    try {
+      const m = JSON.parse(e.data);
+      if (m && Array.isArray(m.accounts)) renderOcBrokerSelect(m.accounts);
+    } catch (err) {}
   });
 
   es.addEventListener('nifty_tick', e => {

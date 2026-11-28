@@ -283,6 +283,7 @@
         <div class="metric-sub-row">
           <span>Utilized Margin: <strong id="utilizedMargin" class="mono">₹0.00</strong></span>
         </div>
+        <div id="perBrokerFundsList" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:6px; font-size:11px;"></div>
       </div>
 
       <div class="metric-card">
@@ -500,7 +501,7 @@
               </div>
             </div>
 
-            <form id="orderForm">
+            <form id="orderForm" novalidate>
               <!-- Select Broker Account & Order Routing Mode -->
               <div class="form-row two-col" style="margin-bottom: 16px;">
                 <div class="form-group">

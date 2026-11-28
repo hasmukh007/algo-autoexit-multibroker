@@ -1586,6 +1586,7 @@ async function run() {
     assert(homeRes.body.includes('quickRiskAccountSelect') && homeRes.body.includes('addPaperAccountBtn') && homeRes.body.includes('paperFields') && homeRes.body.includes('accTargetNetPct'), 'Dashboard must expose per-account SL/Target selector and Paper Trading account controls');
     assert(!homeRes.body.includes('mcx_fo') && !homeRes.body.includes('value="CNC"') && !homeRes.body.includes('customBrokerageFields'), 'Dashboard must be Options-only without Futures/MCX/Delivery options');
     assert(homeRes.body.includes('positionFilterGroup') && homeRes.body.includes('data-pos-filter="per_trade"') && homeRes.body.includes('perTradeTableContainer'), 'Dashboard must expose Net Position & Per Trade filters and table');
+    assert(homeRes.body.includes('perBrokerFundsList'), 'Dashboard must expose per-broker available balance list in funds card');
     assert(homeRes.body.includes('orderStatusFilterGroup') && homeRes.body.includes('data-order-filter="completed"') && homeRes.body.includes('data-order-filter="rejected"') && homeRes.body.includes('data-order-filter="cancelled"'), 'Dashboard must expose Order filters for All/Completed/Open/Rejected/Cancelled');
     assert(homeRes.body.includes('order-confirm.js'), 'Dashboard must load order-confirm.js');
     const confirmJsRes = await httpRequest(testPort, '/order-confirm.js');
@@ -1597,6 +1598,9 @@ async function run() {
     const appJsRes = await httpRequest(testPort, '/app.js');
     assert.strictEqual(appJsRes.status, 200);
     assert(appJsRes.body.includes('brokerSelectSignature') && appJsRes.body.includes('algo_selected_order_broker'), 'updateBrokerSelect must preserve user-selected broker across SSE ticks');
+    assert(appJsRes.body.includes('renderPerBrokerFunds') && appJsRes.body.includes('Avail '), 'app.js must render per-broker available balances');
+    assert(!appJsRes.body.includes('roundToTick('), 'app.js must use roundToTickUi() and never call undefined roundToTick()');
+    assert(homeRes.body.includes('<form id="orderForm" novalidate>'), 'Home orderForm must use novalidate so auto-qty/tick decimals do not silently block submission');
     assert(appJsRes.body.includes('sizingSeq') && appJsRes.body.includes('Math.max(0, Number(d.data.quantity || 0))'), 'refreshOrderSizingFromBalance must guard stale async responses and update zero-qty cleanly');
     assert(appJsRes.body.includes('populateStrikeSelect') && appJsRes.body.includes('updateOrderCurrentPriceDisplay'), 'app.js must populate strike selector and update top current price display');
     assert(appJsRes.body.includes('if (userChanged || ot === \'MKT\')'), 'Live ticks must NOT overwrite Limit or SL Limit/Trigger price textboxes');
@@ -1605,7 +1609,7 @@ async function run() {
     assert(appJsRes.body.includes('renderPerTradeTable') && appJsRes.body.includes('getOrderFilterCategory'), 'app.js must wire Per Trade rendering and Order status filters');
     const ocJsRes = await httpRequest(testPort, '/option-chain.js');
     assert.strictEqual(ocJsRes.status, 200);
-    assert(ocJsRes.body.includes('algo_selected_order_broker') && ocJsRes.body.includes('sizingSeq'), 'option-chain.js must preserve broker selection and guard async sizing');
+    assert(ocJsRes.body.includes('algo_selected_order_broker') && ocJsRes.body.includes('sizingSeq') && ocJsRes.body.includes('renderOcBrokerSelect'), 'option-chain.js must preserve broker selection, guard async sizing, and show broker available balance');
     console.log('   ✅ GET / serves terminal with live top NIFTY ticker, Option Chain, and Chart links.');
 
     const ocRes = await httpRequest(testPort, '/option-chain');
@@ -1632,7 +1636,7 @@ async function run() {
     assert(chartPageRes.body.includes('candleCountdownDisplay') && chartPageRes.body.includes('candleBarCountdown'), 'Chart page must show candle countdown');
     const chartJsRes = await httpRequest(testPort, '/chart.js');
     assert.strictEqual(chartJsRes.status, 200);
-    assert(chartJsRes.body.includes('updateCandleCountdown') && chartJsRes.body.includes('updateLivePriceLineWithCountdown') && chartJsRes.body.includes('recalcChartOrderQty'), 'chart.js must implement candle countdown on price line and quick order modal');
+    assert(chartJsRes.body.includes('updateCandleCountdown') && chartJsRes.body.includes('updateLivePriceLineWithCountdown') && chartJsRes.body.includes('recalcChartOrderQty') && chartJsRes.body.includes('renderChartBrokerSelect'), 'chart.js must implement candle countdown on price line, quick order modal, and broker available balance');
     console.log('   ✅ GET /chart serves live NIFTY chart page with Session Line, 5m/15m/1h HA S/R, Pivots, and PDH/PDL.');
 
     const owRes = await httpRequest(testPort, '/order-window');

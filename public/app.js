@@ -110,6 +110,7 @@ const DOM = {
   maxLossDisplay: document.getElementById('maxLossDisplay'),
   availableFunds: document.getElementById('availableFunds'),
   utilizedMargin: document.getElementById('utilizedMargin'),
+  perBrokerFundsList: document.getElementById('perBrokerFundsList'),
   engineStatusText: document.getElementById('engineStatusText'),
   autoExitToggle: document.getElementById('autoExitToggle'),
   monitoredPositionsCount: document.getElementById('monitoredPositionsCount'),
@@ -633,6 +634,7 @@ function handleMarketTick(payload) {
 
   if (payload.accounts) {
     state.accounts = payload.accounts;
+    renderPerBrokerFunds(payload.accounts);
     renderAccountsTable();
     updateBrokerSelect();
     updateQuickRiskAccountSelect();
@@ -757,13 +759,30 @@ function updateModeUI(mode) {
   }
 }
 
+function renderPerBrokerFunds(accounts = state.accounts) {
+  if (!DOM.perBrokerFundsList) return;
+  const active = (Array.isArray(accounts) ? accounts : []).filter(a => a.enabled);
+  if (active.length === 0) {
+    DOM.perBrokerFundsList.innerHTML = '';
+    return;
+  }
+  DOM.perBrokerFundsList.innerHTML = active.map(acc => {
+    const hasBal = acc.availableCash !== undefined && acc.availableCash !== null;
+    const balStr = hasBal
+      ? formatCurrency(acc.availableCash)
+      : (acc.isPaper && acc.initialBalance ? formatCurrency(acc.initialBalance) : '--');
+    const color = hasBal && Number(acc.availableCash) > 0 ? 'var(--profit-color)' : 'var(--text-secondary)';
+    return `<span class="badge mono" style="background:rgba(148,163,184,0.12); border:1px solid rgba(148,163,184,0.2); padding:2px 6px; font-size:10.5px;">${acc.name}: <strong style="color:${color};">${balStr}</strong></span>`;
+  }).join('');
+}
+
 function updateBrokerSelect() {
   if (!DOM.orderBrokerSelect) return;
   let storedId = '';
   try { storedId = localStorage.getItem('algo_selected_order_broker') || ''; } catch (e) {}
   const prevSelected = DOM.orderBrokerSelect.value || state.selectedBrokerAccountId || storedId;
   const orderAccounts = (state.accounts || []).filter(acc => acc.enabled && acc.manageOrders !== false);
-  const sig = orderAccounts.map(acc => `${acc.id}:${acc.name}:${acc.broker}:${acc.clientCode || ''}:${acc.manageOrders !== false ? 1 : 0}`).join('|');
+  const sig = orderAccounts.map(acc => `${acc.id}:${acc.name}:${acc.broker}:${acc.clientCode || ''}:${acc.availableCash ?? ''}:${acc.manageOrders !== false ? 1 : 0}`).join('|');
 
   if (DOM.orderBrokerSelect.options.length > 0 && state.brokerSelectSignature === sig) {
     if (prevSelected && orderAccounts.some(acc => acc.id === prevSelected) && DOM.orderBrokerSelect.value !== prevSelected) {
@@ -783,7 +802,10 @@ function updateBrokerSelect() {
     orderAccounts.forEach(acc => {
       const opt = document.createElement('option');
       opt.value = acc.id;
-      opt.textContent = `${acc.name} (${acc.broker.toUpperCase()}) - ${acc.clientCode || 'Active'}`;
+      const balTxt = acc.availableCash !== undefined && acc.availableCash !== null
+        ? ` • Avail ₹${Math.round(Number(acc.availableCash)).toLocaleString('en-IN')}`
+        : '';
+      opt.textContent = `${acc.name} (${acc.broker.toUpperCase()}) - ${acc.clientCode || 'Active'}${balTxt}`;
       DOM.orderBrokerSelect.appendChild(opt);
     });
   }
@@ -895,6 +917,7 @@ async function loadAccounts() {
     const data = await res.json();
     if (data.success && Array.isArray(data.data)) {
       state.accounts = data.data;
+      renderPerBrokerFunds(data.data);
       renderAccountsTable();
       updateBrokerSelect();
       updateQuickRiskAccountSelect();
@@ -1268,9 +1291,13 @@ function renderAccountsTable() {
       : `₹${acc.brokeragePerOrder ?? 20}/order`;
     const targetPct = acc.targetNetProfitPct !== undefined ? Number(acc.targetNetProfitPct) : 1.5;
     const stopPct = acc.stopLossNetPct !== undefined ? Number(acc.stopLossNetPct) : -1.0;
-    const balText = acc.availableCash !== undefined && acc.availableCash !== null
-      ? formatCurrency(acc.availableCash)
-      : (acc.broker === 'paper' && acc.initialBalance ? formatCurrency(acc.initialBalance) : '--');
+    const balVal = acc.availableCash !== undefined && acc.availableCash !== null
+      ? acc.availableCash
+      : (acc.broker === 'paper' && acc.initialBalance ? acc.initialBalance : null);
+    const balSub = acc.broker === 'paper' && acc.totalBalance !== undefined && (Number(acc.utilizedMargin || 0) > 0 || Number(acc.netPnl || 0) !== 0)
+      ? `<div style="font-size:10px; color:${Number(acc.netPnl || 0) >= 0 ? 'var(--profit-color)' : 'var(--loss-color)'};">Eq: ${formatCurrency(acc.totalBalance)} (${Number(acc.netPnl || 0) >= 0 ? '+' : ''}${formatCurrency(acc.netPnl || 0)} Net)</div>`
+      : '';
+    const balText = balVal !== null ? `${formatCurrency(balVal)}${balSub}` : '--';
     const paperResetBtn = acc.broker === 'paper'
       ? `<button class="btn-xs btn-outline reset-paper-btn" data-id="${acc.id}" title="Reset paper funds, positions & orders">Reset Paper</button>`
       : '';
@@ -1356,17 +1383,30 @@ function renderAccountsTable() {
       const id = btn.getAttribute('data-id');
       const acc = state.accounts.find(a => a.id === id);
       const currentBal = (acc && acc.initialBalance) || 500000;
-      const entered = prompt(`Reset Paper Account "${acc ? acc.name : id}"?\nEnter starting virtual capital (₹):`, currentBal);
-      if (!entered || Number(entered) <= 0) return;
+      const entered = prompt(`Reset Paper Account "${acc ? acc.name : id}"?\nEnter starting virtual capital (₹, min 1000):`, currentBal);
+      if (entered === null) return;
+      const parsedBal = Number(String(entered).replace(/[₹,\s]/g, '').trim());
+      if (!Number.isFinite(parsedBal) || parsedBal < 1000) {
+        showToast('Please enter a valid starting capital of at least ₹1,000.', 'error');
+        return;
+      }
+      btn.disabled = true;
       try {
-        const res = await fetch(`/api/accounts/${id}/paper-reset`, {
+        const res = await fetch(`/api/accounts/${encodeURIComponent(id)}/paper-reset`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initialBalance: Number(entered) })
+          body: JSON.stringify({ initialBalance: parsedBal })
         });
         const d = await res.json();
         if (d.success) {
-          showToast(`Paper account reset to ${formatCurrency(Number(entered))}`, 'success');
+          if (Array.isArray(d.accounts)) {
+            state.accounts = d.accounts;
+            renderPerBrokerFunds(d.accounts);
+            renderAccountsTable();
+            updateBrokerSelect();
+            updateQuickRiskAccountSelect();
+          }
+          showToast(`Paper account reset to ${formatCurrency(parsedBal)}`, 'success');
           loadAccounts();
           loadPositions();
           loadOrders();
@@ -1375,6 +1415,8 @@ function renderAccountsTable() {
         }
       } catch (e) {
         showToast(e.message, 'error');
+      } finally {
+        btn.disabled = false;
       }
     });
   });
@@ -2530,32 +2572,58 @@ DOM.orderForm.addEventListener('submit', async e => {
   const side = DOM.buyRadio.checked ? 'B' : 'S';
   const enteredPrice = Number(DOM.orderPrice.value || 0);
   const triggerPrice = Number((DOM.orderTriggerPrice && DOM.orderTriggerPrice.value) || 0);
+  const routingMode = (DOM.orderRoutingMode && DOM.orderRoutingMode.value) || (DOM.quickRoutingMode && DOM.quickRoutingMode.value) || 'selected';
+  const accountId = DOM.orderBrokerSelect ? DOM.orderBrokerSelect.value : '';
+  const tradingSymbol = DOM.orderSymbol.value.trim();
+
+  if (routingMode !== 'all_funded' && !accountId) {
+    showToast('No broker checked for order management. Check at least one broker account.', 'error');
+    return;
+  }
+  if (!tradingSymbol) {
+    showToast('Please select or enter a trading symbol.', 'error');
+    return;
+  }
+
   const lot = Math.max(1, Number(lastOrderSpec.lotSize || 1));
   let qtyVal = Math.round(Number(DOM.orderQuantity.value || 0));
   if (qtyVal > 0 && lot > 1 && qtyVal % lot !== 0) {
     qtyVal = Math.max(lot, Math.round(qtyVal / lot) * lot);
     DOM.orderQuantity.value = qtyVal;
   }
+  const autoQuantity = Boolean(DOM.orderAutoQty && DOM.orderAutoQty.checked);
+  if (qtyVal <= 0 && !autoQuantity) {
+    showToast('Order quantity must be greater than 0.', 'error');
+    return;
+  }
 
-  const routingMode = (DOM.orderRoutingMode && DOM.orderRoutingMode.value) || (DOM.quickRoutingMode && DOM.quickRoutingMode.value) || 'selected';
   const allocationPct = DOM.quickCapitalDeployPct ? Number(DOM.quickCapitalDeployPct.value || 100) : undefined;
   const liveLtpVal = Number(orderUiState.liveLtp || 0);
-  const mktAsLimitPx = ot === 'MKT' && liveLtpVal > 0 ? roundToTick(liveLtpVal) : 0;
+  const effectiveMktRef = liveLtpVal > 0 ? liveLtpVal : (ot === 'MKT' && enteredPrice > 0 ? enteredPrice : 0);
+  const mktAsLimitPx = ot === 'MKT' && effectiveMktRef > 0 ? roundToTickUi(effectiveMktRef) : 0;
+  if (ot === 'L' && !(enteredPrice > 0)) {
+    showToast('Please enter a valid Limit price greater than 0.', 'error');
+    return;
+  }
+  if (ot === 'SL' && (!(triggerPrice > 0) || !(enteredPrice > 0))) {
+    showToast('Please enter valid SL Trigger and Limit prices greater than 0.', 'error');
+    return;
+  }
   const payload = {
-    accountId: DOM.orderBrokerSelect.value,
+    accountId,
     routingMode,
     allocationPct,
-    tradingSymbol: DOM.orderSymbol.value.trim(),
+    tradingSymbol,
     instrumentToken: DOM.orderInstrumentToken ? DOM.orderInstrumentToken.value : '',
     exchangeSegment: DOM.orderSegment.value,
     transactionType: side,
     product: DOM.orderProduct.value,
     orderType: mktAsLimitPx > 0 ? 'L' : ot,
     quantity: qtyVal,
-    autoQuantity: Boolean(DOM.orderAutoQty && DOM.orderAutoQty.checked),
-    price: ot === 'MKT' ? mktAsLimitPx : enteredPrice,
-    triggerPrice: ot === 'SL' ? triggerPrice : 0,
-    ltp: Number(liveLtpVal || enteredPrice || 0),
+    autoQuantity,
+    price: ot === 'MKT' ? mktAsLimitPx : roundToTickUi(enteredPrice),
+    triggerPrice: ot === 'SL' ? roundToTickUi(triggerPrice) : 0,
+    ltp: Number(effectiveMktRef || enteredPrice || 0),
     userConfirmed: true
   };
 
